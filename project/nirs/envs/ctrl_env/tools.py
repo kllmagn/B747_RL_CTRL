@@ -64,7 +64,40 @@ class Derivative:
         self.y1, self.y0 = y, self.y1
         
     def output(self):
-        return (self.y1-self.y0)/self.dt
+        if self.y0 is None:
+            return self.y1/self.dt
+        else:
+            return (self.y1-self.y0)/self.dt
+
+
+class DerivativeDict:
+    def __init__(self):
+        self.derivatives = {}
+
+    def output(self, key:str):
+        if key in self.derivatives:
+            return self.derivatives[key].output()
+        else:
+            return 0
+            #raise ValueError("Значения производной данного ключа отсутствует.")
+
+    def input(self, key:str, y:float, dt:float):
+        if key in self.derivatives:
+            return self.derivatives[key].input(y)
+        else:
+            self.derivatives[key] = Derivative(y, dt_static=dt)
+            return self.derivatives[key].output()
+
+
+class MemoryDict:
+    def __init__(self):
+        self.memory = {}
+
+    def input(self, key:str, y:float):
+        self.memory[key] = y
+
+    def output(self, key:str):
+        return self.memory[key]
 
 
 class Storage:
@@ -112,3 +145,6 @@ class Storage:
                 ws.cell(row=i+2, column=j).value = v[i]
             j += 1
         wb.save(filename)
+
+    def merge(self, obj, prefix:str):
+        self.storage.update(dict([(k+'_'+prefix, v) for k,v in obj.storage.items()]))

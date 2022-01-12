@@ -67,16 +67,17 @@ class CustomEvalCallback(BaseCallback):
 
 
 class EarlyStopping(BaseCallback):
-    def __init__(self, check_freq: int, n_times: int, log_dir: str, verbose: int = 1):
+    def __init__(self, check_freq: int, n_times: int, log_dir: str, verbose: int = 1, startup_step:int = 0):
         super(EarlyStopping, self).__init__(verbose)
         self.check_freq = check_freq
         self.best_mean_reward = -np.inf
         self.n_times = n_times
         self.n_cur = 0
         self.log_dir = log_dir
+        self.st_step = startup_step
 
     def _on_step(self) -> bool:
-        if self.n_calls % self.check_freq == 0:
+        if self.num_timesteps > self.st_step and self.n_calls % self.check_freq == 0:
           # Retrieve training reward
           x, y = ts2xy(load_results(self.log_dir), 'timesteps')
           if len(x) > 0:
@@ -117,7 +118,7 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
     def _init_callback(self) -> None:
         # Create folder if needed
         if self.save_path is not None:
-            os.makedirs(self.save_path, exist_ok=True)
+            os.makedirs(self.log_dir, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.check_freq == 0:

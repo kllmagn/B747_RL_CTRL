@@ -46,7 +46,7 @@ def create_expert_data(env_student, env_expert, verbose=1, num_interactions=4e4)
         expert_observations=expert_observations,
     )
     expert_dataset = ExpertDataSet(expert_observations, expert_actions)
-    train_size = int(0.7 * len(expert_dataset))
+    train_size = int(0.9 * len(expert_dataset))
     test_size = len(expert_dataset) - train_size
     train_expert_dataset, test_expert_dataset = random_split(
         expert_dataset, [train_size, test_size]
@@ -60,10 +60,10 @@ def create_expert_data(env_student, env_expert, verbose=1, num_interactions=4e4)
 def pretrain_agent(
     student,
     env_expert,
-    batch_size=64,
+    batch_size=128,
     epochs=10,
-    scheduler_gamma=0.7,
-    learning_rate=1.0,
+    scheduler_gamma=0.6,
+    learning_rate=1.3,
     log_interval=100,
     no_cuda=False,
     seed=1,
@@ -148,9 +148,9 @@ def pretrain_agent(
                     target = target.long()
 
                 test_loss = criterion(action_prediction, target)
-        test_loss /= len(test_loader.dataset)
+        #test_loss /= len(test_loader.dataset)
         if verbose > 0:
-            print(f"Test set: Average loss: {test_loss:.4f}")
+            print(f"Test set: Average loss: {test_loss.item():.4f}")
 
     # Here, we use PyTorch `DataLoader` to our load previously created `ExpertDataset` for training
     # and testing

@@ -3,6 +3,7 @@ import gym
 from math import exp, pi, log
 from gym import spaces
 
+from .tools import calc_err
 from .ctrl import Controller
 
 class ControllerEnv(gym.Env):
@@ -20,7 +21,7 @@ class ControllerEnv(gym.Env):
 		self.ctrl = Controller(*ctrl_args, **ctrl_kwargs)
 		self.n_actions = n_actions
 		self.is_testing = is_testing
-		if self.ctrl.manual_control: # ручное управление (с поддержкой ПИД-регулятора СУ)
+		if self.ctrl.manual_stab: # ручное управление (с поддержкой ПИД-регулятора СУ)
 			if self.n_actions:
 				self.action_space = spaces.MultiDiscrete([self.n_actions]) 
 			else:
@@ -30,14 +31,14 @@ class ControllerEnv(gym.Env):
 				self.action_space = spaces.MultiDiscrete([self.n_actions]*8)
 			else:
 				self.action_space = spaces.Box(low=0.9, high=1.1, shape=(8,)) 
-		self.observation_space = spaces.Box(low=-pi, high=pi, shape=(4,))
+		self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(18,))
 		self.state_box = np.zeros(self.observation_space.shape)
 		self.reward_config = reward_config
 
 	def _get_obs(self):
-		# self.ctrl.model.state,\
-		new_state = np.concatenate((np.array([self.ctrl.model.state_dict[k] for k in ['alpha', 'vartheta', 'wz']]),\
-				np.array([self.ctrl.model.vartheta_ref]))) #, self.ctrl.vth_err.output()]))) #,\
+		# np.array([self.ctrl.model.state_dict[k] for k in ['alpha', 'vartheta', 'wz']]),\ 
+		new_state = np.concatenate((self.ctrl.model.state,\
+				np.array([self.ctrl.err_vartheta, self.ctrl.model.deltaz]))) #, self.ctrl.vartheta_ref])))
 				#self.ctrl.model.CXa, self.ctrl.model.CYa, self.ctrl.model.mz, self.ctrl.model.Kalpha, self.ctrl.model.dCm_ddeltaz, \
 				#self.ctrl.err_vartheta, self.ctrl.calc_CS_err(), self.ctrl.model.hzh])))
 		if len(self.observation_space.shape) > 1:
@@ -48,34 +49,45 @@ class ControllerEnv(gym.Env):
 		return self.state_box
 
 	def is_done(self):
-		return self.ctrl.is_done #or (not self.is_testing and self.ctrl.is_limit_err)
+		return self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
 
 	def get_reward(self, action):
-		baseline = 1e-4
-		Ay = self.reward_config.get('Ay', 1)
-		Ae = 1-Ay
-		max_y, max_e = 1*pi/80, 1*pi/180
-		ky0 = self.reward_config.get('ky', log(baseline)/max_y)
-		ke0 = self.reward_config.get('ke', log(baseline)/max_e)
-		use_limit_punisher = False
-		tp = 3
-		ky = lambda t: ky0 #if t >= tp else ky0*t/tp
-		ke = lambda t: ke0 #if t >= tp else ke0*t/tp
-		if self.ctrl.manual_control:
-			ry = Ay*exp(ky(self.ctrl.model.time)*(self.ctrl.model.vartheta_ref-self.ctrl.model.state_dict['vartheta'])**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
-			re = Ae*exp(ke(self.ctrl.model.time)*self.ctrl.model.state_dict['wz']**2) #-(self.ctrl.model.state_dict['wz']**2) #-self.ctrl.calc_SS_err()**2 #
-			rl = -1 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-			return ry+re+rl
+		if self.ctrl.manual_stab:
+			baseline = 1e-4
+			mode = self.reward_config.get('mode', 'VRS')
+			if mode == 'standard':
+				Av = self.reward_config.get('Av', 0.5)
+				Aw = 1-Av
+				max_ve, max_we = (20*pi/180)**2, (0.001*pi/180/self.ctrl.model.dt)**2
+				kv0 = self.reward_config.get('kv', log(baseline)/max_ve)
+				kw0 = self.reward_config.get('kw', log(baseline)/max_we)
+				use_limit_punisher = True
+				tp = 0
+				kv = lambda t: kv0 if t >= tp else kv0*t/tp
+				kw = lambda t: kw0 if t >= tp else kw0*t/tp
+				rv = Av*exp(kv(self.ctrl.model.time)*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
+				rw = Aw*exp(kw(self.ctrl.model.time)*self.ctrl.model.state_dict['wz']**2) #-(self.ctrl.model.state_dict['wz']**2) #-self.ctrl.calc_SS_err()**2 #
+				rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
+				return rv+rw+rl
+			elif mode == 'VRS': # velocity reward strategy
+				e = self.ctrl.err_vartheta
+				dedt = self.ctrl.deriv_dict.output('dvedt')
+				dedt_prev = self.ctrl.memory_dict.output('dvedt')
+				rv = -dedt if e > 0 else dedt
+				rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
+				return rt
+			#return 1/(1+180/pi*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) + (-2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0)
 		else:
 			return 0.5/(self.ctrl.calc_CS_err()+1) + 0.5/(self.ctrl.calc_SS_err()+1)
 
 	def step(self, action):
 		if self.n_actions:
-			if self.ctrl.manual_control:
+			if self.ctrl.manual_stab:
 				action = 2*action / (self.n_actions-1) - 1
 				action *= self.ctrl.delta_max
 			else:
 				action = action / (self.n_actions-1) + 0.5
+		self.ctrl.memory_dict.input('dvedt', self.ctrl.deriv_dict.output('dvedt'))
 		self.ctrl.step(action)
 		observation = self._get_obs()
 		reward = self.get_reward(action)
@@ -91,8 +103,6 @@ class ControllerEnv(gym.Env):
 
 	def render(self, mode='human'):
 		pass
-		#if self.ctrl.tk-self.ctrl.model.dt <= self.ctrl.model.time:
-		#	print(self.ctrl.model.state_dict['vartheta']*180/pi, self.ctrl.model.vartheta_ref*180/pi)
 
 
 def main():
