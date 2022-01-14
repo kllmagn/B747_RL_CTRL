@@ -13,6 +13,19 @@ from torch.utils.data.dataset import Dataset, random_split
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
 from stable_baselines3.common.evaluation import evaluate_policy
 
+import pathlib
+import pickle
+import tempfile
+import copy
+
+#import seals  # noqa: F401
+#import stable_baselines3 as sb3
+
+from imitation.algorithms import bc
+from imitation.algorithms.adversarial import airl, gail
+from imitation.data import rollout
+from imitation.util import logger, util
+
 class ExpertDataSet(Dataset):
     def __init__(self, expert_observations, expert_actions):
         self.observations = expert_observations
@@ -179,3 +192,58 @@ def pretrain_agent(
         mean_reward, std_reward = evaluate_policy(student, env, n_eval_episodes=10)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
         return student
+
+
+def pretrain_agent_imit(
+    student,
+    env_expert,
+    timesteps:int=2048,
+    num_episodes:int=500,
+    algo='BC'
+    ):
+    #tempdir = tempfile.TemporaryDirectory(prefix="pretrain")
+    tempdir_path = './logs/tb_log/' #pathlib.Path(tempdir.name)
+    trajectories = rollout.generate_trajectories(lambda obs: [[env_expert.get_attr('ctrl')[i].model.deltaz_ref] for i in range(len(obs))], env_expert, rollout.make_sample_until(None, num_episodes))
+    transitions = rollout.flatten_trajectories(trajectories)
+    env = student.env
+    if algo == 'BC':
+        bc_logger = logger.configure(tempdir_path+"BC/")
+        bc_trainer = bc.BC(
+            policy=student.policy,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            demonstrations=transitions,
+            custom_logger=bc_logger,
+        )
+        bc_trainer.train(n_epochs=timesteps)
+        student.policy = bc_trainer.policy
+    elif algo == 'AIRL':
+        airl_logger = logger.configure(tempdir_path+"AIRL/")
+        airl_trainer = airl.AIRL(
+            venv=student.env,
+            demonstrations=transitions,
+            demo_batch_size=256,
+            gen_algo=student,
+            custom_logger=airl_logger,
+        )
+        airl_trainer.train(total_timesteps=timesteps)
+        student.policy = airl_trainer.policy
+    elif algo == 'GAIL':
+        gail_logger = logger.configure(tempdir_path+"/GAIL/")
+        gail_trainer = gail.GAIL(
+            venv=student.env,
+            demonstrations=transitions,
+            demo_batch_size=256,
+            gen_algo=student,
+            custom_logger=gail_logger,
+            #normalize_obs=False,
+            #normalize_reward=False
+        )
+        gail_trainer.train(total_timesteps=timesteps)
+        student.policy = gail_trainer.policy
+    else:
+        raise ValueError("Неподдерживаемый алгоритм имитационного обучения: "+algo)
+    student.set_env(env)
+    mean_reward, std_reward = evaluate_policy(student, student.env, n_eval_episodes=10)
+    print(f"Mean reward = {mean_reward} +/- {std_reward}")
+    return student

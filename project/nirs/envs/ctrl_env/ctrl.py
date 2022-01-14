@@ -18,25 +18,29 @@ class Controller:
         manual_ctrl:bool=True, # использовать ручное управление (СУ)
         manual_stab:bool=True, # использовать ручное управление (СС)
         use_storage=False,
-        delta_max=15*pi/180,
+        delta_max=17*pi/180,
         vartheta_max=10*pi/180,
-        sample_step:float=None,
-        use_limiter=True
+        sample_time:float=None,
+        use_limiter=False,
+        random_init = False, # случайно назначить начальные значения высоты и угла тангажа при инициализации модели
+        full_auto=False # ПИД-СС (+ПИД-СУ при use_ctrl=True) в неуправляемом (автоматическом) режиме
         ):
-        self.model = Model(use_PID_CS=use_ctrl and not manual_ctrl, use_PID_SS=not manual_stab)
+        self.full_auto = full_auto
+        self.use_ctrl = use_ctrl
+        self.manual_ctrl = manual_ctrl and not self.full_auto
+        self.manual_stab = manual_stab and not self.full_auto
+        self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
         self.tk = tk # время окончания интегрирования
-        self.sample_step = sample_step if sample_step else self.model.dt
-        assert self.sample_step >= self.model.dt, "Шаг интегрирования не может превышать шаг взаимодействия."
+        self.sample_time = sample_time if sample_time else self.model.dt
+        assert self.sample_time >= self.model.dt, "Шаг интегрирования не может превышать шаг взаимодействия."
         self.storage = Storage() # хранилище параметров
         self.use_storage = use_storage
         self.h_func = h_func # функция требуемой высоты от времени
         self.vartheta_func = vartheta_func
         self.random_reset = self.h_func is None or self.vartheta_func is None
+        self.random_init = random_init
         self.delta_max = delta_max # максимальное значение по углу отклонения рулей
         self.vartheta_max = vartheta_max # максимальное значение угла тангажа
-        self.use_ctrl = use_ctrl
-        self.manual_ctrl = manual_ctrl
-        self.manual_stab = manual_stab
         self.vth_err = Integrator()
         self.deriv_dict = DerivativeDict()
         self.memory_dict = MemoryDict()
@@ -46,11 +50,19 @@ class Controller:
     def reset(self):
         if self.random_reset:
             h_zh = random.uniform(10800, 11300)
-            vartheta_zh = random.uniform(-10*pi/180, 10*pi/180)
+            vartheta_zh0 = random.uniform(-10*pi/180, 10*pi/180)
+            vartheta_zh1 = random.uniform(-10*pi/180, 10*pi/180)
+            tp = random.uniform(0, self.tk)
             self.h_func = lambda t: h_zh
-            self.vartheta_func = lambda t: vartheta_zh
+            self.vartheta_func = lambda t: vartheta_zh0 if tp > t else vartheta_zh1
             #print('Устанавливаю vartheta_zh =', vartheta_zh*180/pi)
         self.model.initialize()
+        if self.random_init:
+            h0 = random.uniform(10800, 11300)
+            vartheta0 = random.uniform(-10*pi/180, 10*pi/180)
+            # self.model.vartheta0 = vartheta0
+            # self.model.h0 = h0
+            raise ValueError('There is no support for initial state randomization yet.')
         self.storage.clear_all()
         self.vth_err.reset()
 
@@ -60,7 +72,7 @@ class Controller:
         if self.use_storage:
             # используется режим записи состояния модели
             self.storage.record("t", self.model.time)
-            self.storage.record('deltaz', self.model.deltaz)
+            self.storage.record('deltaz', self.model.deltaz if self.manual_stab else self.model.deltaz_ref)
             self.storage.record('hzh', self.model.hzh)
             self.storage.record('vartheta_ref', self.vartheta_ref)
             state = self.model.state_dict
@@ -71,24 +83,32 @@ class Controller:
         '''
         Выполнить один шаг симуляции с заданным массивом управляющих параметров.
         '''
-        # выставляем значение текущей треубемой высоты в соответствии со значением заданной функции
-        self.model.hzh = self.h_func(self.model.time)
-        if self.model.use_PID_CS:
-            self.model.PID_CS = (self.model._PID_initial*action)[:4] if self.model.use_PID_SS\
-                else self.model._PID_initial[:4]*action[:4]
-        elif not self.use_ctrl:
-            self.model.vartheta_zh = self.vartheta_func(self.model.time)
+        if self.full_auto:
+            # 
+            if not self.use_ctrl:
+                self.model.vartheta_zh = self.vartheta_func(self.model.time)
+            else:
+                # выставляем значение текущей треубемой высоты в соответствии со значением заданной функции
+                self.model.hzh = self.h_func(self.model.time)
         else:
-            self.model.vartheta_zh = action[0]
-        if self.model.use_PID_SS:
-            self.model.PID_SS = (self.model._PID_initial*action)[-4:] if (self.model.use_PID_CS or not self.use_ctrl) \
-                else self.model._PID_initial[-4:]*action[-4:]
-        else:
-            self.model.deltaz = action[-1]
+            if not self.use_ctrl:
+                self.model.vartheta_zh = self.vartheta_func(self.model.time)
+            else:
+                self.model.hzh = self.h_func(self.model.time)
+                if self.model.use_PID_CS:
+                    self.model.PID_CS = (self.model._PID_initial*action)[:4] if self.model.use_PID_SS\
+                        else self.model._PID_initial[:4]*action[:4]
+                else:
+                    self.model.vartheta_zh = action[0]
+            if self.model.use_PID_SS:
+                self.model.PID_SS = (self.model._PID_initial*action)[-4:] if self.model.use_PID_CS \
+                    else self.model._PID_initial[-4:]*action[-4:]
+            else:
+                self.model.deltaz = action[-1]
         self.state_backup = self.model.state
         self.model.step() # производим симуляцию модели на один шаг
         self.post_step()
-        while ((round(round(self.model.time/self.model.dt) % round(self.sample_step/self.model.dt))) != 0):
+        while ((round(round(self.model.time/self.model.dt) % round(self.sample_time/self.model.dt))) != 0):
             self.model.step()
             self.post_step()
 

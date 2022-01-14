@@ -21,7 +21,7 @@ class ControllerEnv(gym.Env):
 		self.ctrl = Controller(*ctrl_args, **ctrl_kwargs)
 		self.n_actions = n_actions
 		self.is_testing = is_testing
-		if self.ctrl.manual_stab: # ручное управление (с поддержкой ПИД-регулятора СУ)
+		if self.ctrl.full_auto or self.ctrl.manual_stab: # ручное управление (с поддержкой ПИД-регулятора СУ)
 			if self.n_actions:
 				self.action_space = spaces.MultiDiscrete([self.n_actions]) 
 			else:
@@ -31,14 +31,14 @@ class ControllerEnv(gym.Env):
 				self.action_space = spaces.MultiDiscrete([self.n_actions]*8)
 			else:
 				self.action_space = spaces.Box(low=0.9, high=1.1, shape=(8,)) 
-		self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(18,))
+		self.observation_space = spaces.Box(low=-pi, high=pi, shape=(5,))
 		self.state_box = np.zeros(self.observation_space.shape)
 		self.reward_config = reward_config
 
 	def _get_obs(self):
-		# np.array([self.ctrl.model.state_dict[k] for k in ['alpha', 'vartheta', 'wz']]),\ 
-		new_state = np.concatenate((self.ctrl.model.state,\
-				np.array([self.ctrl.err_vartheta, self.ctrl.model.deltaz]))) #, self.ctrl.vartheta_ref])))
+		# self.ctrl.model.state,\
+		new_state = np.concatenate((np.array([self.ctrl.model.state_dict[k] for k in ['alpha', 'vartheta', 'wz']]),\
+				np.array([self.ctrl.vartheta_ref, self.ctrl.err_vartheta]))) #, (self.ctrl.model.deltaz if self.ctrl.manual_stab else self.ctrl.model.deltaz_ref)]))) #, self.ctrl.vartheta_ref])))
 				#self.ctrl.model.CXa, self.ctrl.model.CYa, self.ctrl.model.mz, self.ctrl.model.Kalpha, self.ctrl.model.dCm_ddeltaz, \
 				#self.ctrl.err_vartheta, self.ctrl.calc_CS_err(), self.ctrl.model.hzh])))
 		if len(self.observation_space.shape) > 1:
@@ -52,32 +52,31 @@ class ControllerEnv(gym.Env):
 		return self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
 
 	def get_reward(self, action):
-		if self.ctrl.manual_stab:
-			baseline = 1e-4
-			mode = self.reward_config.get('mode', 'VRS')
-			if mode == 'standard':
-				Av = self.reward_config.get('Av', 0.5)
-				Aw = 1-Av
-				max_ve, max_we = (20*pi/180)**2, (0.001*pi/180/self.ctrl.model.dt)**2
-				kv0 = self.reward_config.get('kv', log(baseline)/max_ve)
-				kw0 = self.reward_config.get('kw', log(baseline)/max_we)
-				use_limit_punisher = True
-				tp = 0
-				kv = lambda t: kv0 if t >= tp else kv0*t/tp
-				kw = lambda t: kw0 if t >= tp else kw0*t/tp
-				rv = Av*exp(kv(self.ctrl.model.time)*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
-				rw = Aw*exp(kw(self.ctrl.model.time)*self.ctrl.model.state_dict['wz']**2) #-(self.ctrl.model.state_dict['wz']**2) #-self.ctrl.calc_SS_err()**2 #
-				rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-				return rv+rw+rl
-			elif mode == 'VRS': # velocity reward strategy
-				e = self.ctrl.err_vartheta
-				dedt = self.ctrl.deriv_dict.output('dvedt')
-				dedt_prev = self.ctrl.memory_dict.output('dvedt')
-				rv = -dedt if e > 0 else dedt
-				rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
-				return rt
-			#return 1/(1+180/pi*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) + (-2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0)
+		baseline = 1e-4
+		mode = self.reward_config.get('mode', 'standard')
+		if mode == 'standard':
+			Av = self.reward_config.get('Av', 0.5)
+			Aw = 1-Av
+			max_ve, max_we = (20*pi/180)**2, (0.001*pi/180/self.ctrl.model.dt)**2
+			kv0 = self.reward_config.get('kv', log(baseline)/max_ve)
+			kw0 = self.reward_config.get('kw', log(baseline)/max_we)
+			use_limit_punisher = True
+			tp = 0
+			kv = lambda t: kv0 if t >= tp else kv0*t/tp
+			kw = lambda t: kw0 if t >= tp else kw0*t/tp
+			rv = Av*exp(kv(self.ctrl.model.time)*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
+			rw = Aw*exp(kw(self.ctrl.model.time)*self.ctrl.model.state_dict['wz']**2) #-(self.ctrl.model.state_dict['wz']**2) #-self.ctrl.calc_SS_err()**2 #
+			rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
+			return rv+rw+rl
+		elif mode == 'VRS': # velocity reward strategy
+			e = self.ctrl.err_vartheta
+			dedt = self.ctrl.deriv_dict.output('dvedt')
+			dedt_prev = self.ctrl.memory_dict.output('dvedt')
+			rv = -dedt if e > 0 else dedt
+			rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
+			return rt
 		else:
+			#return 1/(1+180/pi*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) + (-2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0)
 			return 0.5/(self.ctrl.calc_CS_err()+1) + 0.5/(self.ctrl.calc_SS_err()+1)
 
 	def step(self, action):
