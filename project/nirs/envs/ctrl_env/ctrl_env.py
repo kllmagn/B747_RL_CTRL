@@ -55,25 +55,28 @@ class ControllerEnv(gym.Env):
 		baseline = 1e-4
 		mode = self.reward_config.get('mode', 'standard')
 		if mode == 'standard':
-			Av = self.reward_config.get('Av', 0.5)
+			Av = self.reward_config.get('Av', 0.2)
 			Aw = 1-Av
-			max_ve, max_we = (20*pi/180)**2, (0.001*pi/180/self.ctrl.model.dt)**2
+			max_ve, max_we = (5*pi/180)**2, (0.001*pi/180/self.ctrl.model.dt)**2
 			kv0 = self.reward_config.get('kv', log(baseline)/max_ve)
 			kw0 = self.reward_config.get('kw', log(baseline)/max_we)
 			use_limit_punisher = True
 			tp = 0
 			kv = lambda t: kv0 if t >= tp else kv0*t/tp
 			kw = lambda t: kw0 if t >= tp else kw0*t/tp
-			rv = Av*exp(kv(self.ctrl.model.time)*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
+			rv = Av/(1+180/pi*abs(self.ctrl.err_vartheta)) #Av*exp(kv(self.ctrl.model.time)*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) #self.ctrl.calc_SS_err())) #1/(1+ky*self.ctrl.calc_SS_err()**2)*exp(-self.ctrl.model.time/self.ctrl.tk)
+			rdeltaz = 0.8/(1+abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
 			rw = Aw*exp(kw(self.ctrl.model.time)*self.ctrl.model.state_dict['wz']**2) #-(self.ctrl.model.state_dict['wz']**2) #-self.ctrl.calc_SS_err()**2 #
 			rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-			return rv+rw+rl
+			#print('rv:', rv, 'rdeltaz:', rdeltaz)
+			return rv+rdeltaz+rw+rl
 		elif mode == 'VRS': # velocity reward strategy
 			e = self.ctrl.err_vartheta
 			dedt = self.ctrl.deriv_dict.output('dvedt')
 			dedt_prev = self.ctrl.memory_dict.output('dvedt')
 			rv = -dedt if e > 0 else dedt
 			rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
+			#print(self.ctrl.vartheta_ref*180/pi, self.ctrl.model.state_dict['vartheta']*180/pi, self.ctrl.err_vartheta*180/pi)
 			return rt
 		else:
 			#return 1/(1+180/pi*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) + (-2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0)

@@ -18,13 +18,13 @@ def calc_err(x1, x2) -> float:
     return abs(err)
 
 def calc_stepinfo(ys:list, y_base:float, error_band=0.05, ts:list=None):
-    overshoot = max(ys)/y_base-y_base if y_base != 0 else max(ys)
+    overshoot = (max(ys)-y_base)/y_base*100 if y_base != 0 else None #max(ys)
     try:
-        tr = ts[next(i for i in range(0,len(ys)-1) if ys[i]>y_base*(1-error_band))]-ts[0] if ts else None
+        tr = ts[next(i for i in range(0,len(ys)-1) if (ys[i]-ys[0])/(y_base-ys[0])>=(1-error_band))]-ts[0] if ts else None
     except StopIteration:
         tr = None
     try:
-        tp = ts[next(len(ys)-i for i in range(2,len(ys)-1) if abs(ys[-i]/y_base-y_base if y_base != 0 else ys[-i])>error_band)]-ts[0] if ts else None
+        tp = ts[next(len(ys)-i for i in range(1,len(ys)+1) if ((ys[len(ys)-i]-ys[0])/(y_base-ys[0])<=1-error_band or (ys[len(ys)-i]-ys[0])/(y_base-ys[0])>=1+error_band))]-ts[0] if ts else None
     except StopIteration:
         tp = None
     info = dict(stepinfo_template)
@@ -123,6 +123,8 @@ class Storage:
                 plt.plot(self.storage[base], self.storage[name], label=name)
             else:
                 plt.plot(self.storage[name], label=name)
+        plt.grid()
+        plt.legend()
         plt.show()
 
     def save(self, filename='storage.xls', base=None):

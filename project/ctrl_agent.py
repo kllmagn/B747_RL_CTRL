@@ -223,11 +223,11 @@ class ControllerAgent:
         if preload:
             preload_path = os.path.join(self.log_dir, self.bm_name)
             print('Предзагружаю модель из', preload_path)
-            self.model = self.net_class.load(preload_path)
+            self.model = self.net_class.load(preload_path, tensorboard_log=self.tb_log)
             self.model.set_env(env)
         else:
-            self.model = self.net_class('MlpPolicy', env, **self.hp)
-        env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], full_auto=True)])
+            self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, **self.hp)
+        env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], full_auto=True, manual_ctrl=False, manual_stab=False)])
         self.model = pretrain_agent_imit(self.model, env_expert, timesteps=timesteps, num_episodes=num_int_episodes, algo=algo)
         self.model.save(os.path.join(self.log_dir, self.bm_name))
 
@@ -237,13 +237,13 @@ class ControllerAgent:
         if optimize:
             print('Оптимизирую с помощью Optuna')
             self.optimize(timesteps, *ctrl_env_args, **ctrl_env_kwargs)
-            self.model = self.net_class.load(os.path.join(self.log_dir, 'best_model.zip'))
+            self.model = self.net_class.load(os.path.join(self.log_dir, 'best_model.zip'), tensorboard_log=self.tb_log)
             self.model.set_env(env)
         else:
             if preload:
                 preload_path = os.path.join(self.log_dir, 'best_model.zip')
                 print('Предзагружаю модель из', preload_path)
-                self.model = self.net_class.load(preload_path)
+                self.model = self.net_class.load(preload_path, tensorboard_log=self.tb_log)
                 self.model.set_env(env)
             else:
                 self.model = self.net_class('MlpPolicy', env, **self.hp)
@@ -253,7 +253,7 @@ class ControllerAgent:
         cb = CallbackList([cb1, cb3]) #, cb2])
         self.model.learn(total_timesteps=timesteps, callback=cb)
 
-    def test_env(self, num_interactions:int, env, no_action=False, use_render=False):
+    def test_env(self, num_interactions:int, env, no_action=False, use_render=False, on_episode_end=None):
         if not no_action:
             self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name))
         done = False
@@ -269,6 +269,8 @@ class ControllerAgent:
                 action, state = self.model.predict(obs, state=state, deterministic=True)
             obs, reward, done, _ = env.step(action)
             if done:
+                if on_episode_end:
+                    on_episode_end(env)
                 storage = copy.deepcopy(tmp_storage)
                 rews.append(env.buf_infos[0]['episode']['r'])
                 obs = env.reset()
@@ -279,47 +281,60 @@ class ControllerAgent:
         return np.mean(rews), np.std(rews), storage
 
     def test(self, *ctrl_env_args, ht_func=None, varthetat_func=None, **ctrl_env_kwargs):
-        if ht_func is None:
-            ht = random.uniform(10800, 11300)
-            ht_func = lambda t: ht
-        if varthetat_func is None:
-            varthetat= random.uniform(-10*pi/180, 10*pi/180)
-            varthetat_func = lambda t: varthetat
+        ctrl_env_kwargs['random_reset'] = False
+
         self.env = ControllerEnv(*ctrl_env_args, h_func=ht_func, vartheta_func=varthetat_func, use_storage=True,\
             is_testing=True, **ctrl_env_kwargs)
         tk = ctrl_env_kwargs['tk']
         print('Расчет перехода с использованием нейросетевого регулятора [func]')
         env = self._wrap_env(self.env, manual_reset=True)
+        hf = vf = None
+        def callb(env):
+            nonlocal vf, hf
+            vf = env.get_attr('ctrl')[0].vartheta_func
+            hf = env.get_attr('ctrl')[0].h_func
+            ctrl_obj = env.get_attr('ctrl')[0]
+            if ctrl_obj.use_ctrl:
+                print(ctrl_obj.stepinfo_CS())
+            else:
+                print(ctrl_obj.stepinfo_SS())
         num_interactions = int(tk/self.env.ctrl.sample_time)
-        mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True)
+        mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True, on_episode_end=callb)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
         y_neural, varth_neural = storage1.storage["y"], storage1.storage["vartheta"]
-        storage1.plot(["deltaz"], "t")
-        storage1.plot(["vartheta", 'vartheta_ref'], "t")
-        if env.envs[0].env.ctrl.use_ctrl:
-            storage1.plot(["y", 'hzh'], "t")
-        #mean_reward, std_reward = evaluate_policy(self.model, env, n_eval_episodes=5)
-        #print(f"Mean reward = {mean_reward} +/- {std_reward}")
 
         print('Расчет перехода с использованием ПИД-регулятора [func]')
-        env = ControllerEnv(h_func=ht_func, vartheta_func=varthetat_func, use_ctrl=ctrl_env_kwargs['use_ctrl'], full_auto=True, use_storage=True, is_testing=True, tk=tk)
+        env = ControllerEnv(h_func=hf, vartheta_func=vf, use_ctrl=ctrl_env_kwargs['use_ctrl'],\
+            full_auto=True, manual_ctrl=False, manual_stab=False, use_storage=True, is_testing=True, tk=tk, random_reset=ctrl_env_kwargs['random_reset'])
         env = self._wrap_env(env, manual_reset=True)
-        mean_reward, std_reward, storage2 = self.test_env(num_interactions*int(self.env.ctrl.sample_time/self.env.ctrl.model.dt), env, no_action=True, use_render=True)
+        mean_reward, std_reward, storage2 = self.test_env(\
+            num_interactions*int(self.env.ctrl.sample_time/self.env.ctrl.model.dt),\
+                env, no_action=True, use_render=True, on_episode_end=callb)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
+
         storage2.merge(storage1, 'neural')
-        storage2.plot(["deltaz_neural", "deltaz"], "t")
-        storage2.plot(["vartheta_ref", "vartheta_neural", "vartheta"], "t")
+        storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t")
         if env.envs[0].env.ctrl.use_ctrl:
-            storage1.plot(["y", 'hzh'], "t")
-            storage2.plot(["y_neural", "y"], "t")
+            storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t")
+        storage2.plot(["deltaz_neural", "deltaz"], "t")
+
+        storage2.save('res.xlsx')
+
+    def show(self):
+        if self.model is not None:
+            print(self.model.policy)
+        else:
+            print('Модель отсутствует.')
 
 
 if __name__ == '__main__':
+    # добавить таймер для обучения
     net_class = A2C
     env_kwargs = dict(
-        use_ctrl = False, # использовать СУ (ПИД-регулятор или нейросетевое обеспечение)
+        use_ctrl = True, # использовать СУ (ПИД-регулятор авто или коррекция)
         manual_ctrl = False, # вкл. ручное управление СУ (откл. поддержку ПИД-регулятора)
         manual_stab = True, # вкл. ручное управление СС (откл. поддержку ПИД-регулятора)
+        full_auto = True, # не использовать коррекцию коэффициентов ПИД-регуляторов
         n_actions = None,
         sample_time = 0.05,
         use_limiter = False
@@ -336,15 +351,15 @@ if __name__ == '__main__':
     train = False
     train_kwargs = dict(
         timesteps =  1_000_000,
-        tk = 80, # секунд
-        preload = False,
-        optimize = True
+        tk = 40, # секунд
+        preload = True,
+        optimize = False
     )
     # ========== Тестирование ==========
     test_kwargs = dict(
-        tk = 50, # секунд
-        ht_func = lambda t: 12000,
-        varthetat_func = lambda t: 10*pi/180
+        tk = 60, # секунд
+        ht_func = lambda t: 11500,
+        varthetat_func = lambda t: 10*pi/180 #if t < 25 else -10*pi/180
     )
     # ==================================
     ctrl = ControllerAgent(net_class=net_class, use_tb=True)
@@ -353,3 +368,4 @@ if __name__ == '__main__':
     if train:
         ctrl.train(**train_kwargs, **env_kwargs)
     ctrl.test(**test_kwargs, **env_kwargs)
+    ctrl.show()
