@@ -1,13 +1,11 @@
 import ctypes
 import os
 import platform
-import random
-from math import pi
 import pathlib
 from shutil import copyfile
 import tempfile
 import pathlib
-import weakref
+#import weakref
 
 import uuid
 import numpy as np
@@ -15,10 +13,10 @@ import numpy as np
 from .rtwtypes import real_T, boolean_T
 
 class Model:
-    def __init__(self, model="env_PID", use_PID_SS=True, use_PID_CS=True):
+    def __init__(self, model="model", use_PID_SS=True, use_PID_CS=True):
         self.model = model
-        tmp_dir = tempfile.TemporaryDirectory(prefix="model")
-        tmp_path = pathlib.Path(tmp_dir.name) # временный путь до папки с временными библиотеками
+        self.tmp_dir = tempfile.TemporaryDirectory(prefix="model")
+        tmp_path = pathlib.Path(self.tmp_dir.name) # временный путь до папки с временными библиотеками
         folder = pathlib.Path(__file__).parent.resolve() # папка данного скрипта
         self.dll_name = str(uuid.uuid4()) # временное название новой библиотеки
         platf = platform.system() # тип исполняющей системы (Linux или Windows)
@@ -196,7 +194,14 @@ class Model:
     '''
 
 def main():
-	pass
+    model = Model(use_PID_CS=False)
+    model.hzh = 100
+    model.vartheta_zh = 0
+    print(model.time, model.state)
+    while model.time < 500:
+        model.step()
+        #print(model.time, model.state)
+    print(model.time, model.state)
 
 if __name__ == '__main__':
 	main()

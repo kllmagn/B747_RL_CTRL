@@ -59,8 +59,8 @@ class Controller:
             self.h_func = lambda t: h_zh
             w = random.uniform(0.01, 0.5) # Гц
             self.vartheta_func = lambda t: A #np.clip([(A*sin(t))*sin((w*sin(t))*t) + dv], [-10*pi/180], [10*pi/180])[0]
-            self.use_ctrl = random.choice([True, False])
-            self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
+            #self.use_ctrl = random.choice([True, False])
+            #self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
             #print('Устанавливаю vartheta_zh =', vartheta_zh*180/pi)
         self.model.initialize()
         if self.random_init:
@@ -72,9 +72,9 @@ class Controller:
         self.storage.clear_all()
         self.vth_err.reset()
         
-        self.model.step()
-        self.post_step()
-        self.model.initialize()
+        #self.model.step()
+        #self.post_step()
+        #self.model.initialize()
 
     def post_step(self, state=None):
         self.vth_err.input(self.err_vartheta)
@@ -145,9 +145,14 @@ class Controller:
 
     @property
     def err_vartheta(self) -> float:
-        '''Ошибка между требуемым (СУ) и фактическим углами тангажа.'''
+        '''Ошибка между требуемым и фактическим углами тангажа.'''
         return self.vartheta_ref-self.model.state_dict['vartheta']
 
+    @property
+    def err_h(self) -> float:
+        '''Ошибка между требуемым и фактическим значениями высоты.'''
+        return self.model.hzh-self.model.state_dict['y']
+        
     @property
     def is_limit_err(self) -> bool:
         '''Произошла ли ошибка вследствие превышения ограничений по углам.'''
@@ -171,13 +176,13 @@ class Controller:
         "Характеристики ПП СС"
         if not self.use_storage or (self.use_storage and ('vartheta' not in self.storage.storage or 't' not in self.storage.storage)):
             raise ValueError('Вычисление хар-к ПП СС недоступно: ошибка хранилища.')
-        return calc_stepinfo(self.storage.storage['vartheta'], self.vartheta_ref, ts=self.storage.storage['t'])
+        return calc_stepinfo(self.storage.storage['vartheta'], self.storage.storage['vartheta_ref'][-1], ts=self.storage.storage['t'])
 
     def stepinfo_CS(self) -> dict:
         "Характеристики ПП СУ"
         if not self.use_storage or (self.use_storage and ('y' not in self.storage.storage or 't' not in self.storage.storage)):
             raise ValueError('Вычисление хар-к ПП СУ недоступно: ошибка хранилища.')
-        return calc_stepinfo(self.storage.storage['y'], self.model.hzh, ts=self.storage.storage['t'])
+        return calc_stepinfo(self.storage.storage['y'], self.storage.storage['hzh'][-1], ts=self.storage.storage['t'])
 
 def main():
 	pass

@@ -31,6 +31,7 @@ def calc_stepinfo(ys:list, y_base:float, error_band=0.05, ts:list=None):
     info['overshoot'] = overshoot
     info['settling_time'] = tp
     info['rise_time'] = tr
+    info['static_error'] = abs(ys[-1]-y_base) #)/y_base*100 if y_base != 0 else abs(ys[-1]-y_base)
     return info
 
 
@@ -115,7 +116,7 @@ class Storage:
     def clear_all(self, ):
         self.storage = {}
 
-    def plot(self, names, base:str=None):
+    def plot(self, names, base:str=None, xlabel=None, ylabel=None):
         if type(names) is str:
             names = [names]
         for name in names:
@@ -125,6 +126,10 @@ class Storage:
                 plt.plot(self.storage[name], label=name)
         plt.grid()
         plt.legend()
+        if xlabel:
+            plt.xlabel(xlabel)
+        if ylabel:
+            plt.ylabel(ylabel)
         plt.show()
 
     def save(self, filename='storage.xls', base=None):
