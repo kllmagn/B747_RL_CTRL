@@ -185,7 +185,11 @@ class Controller:
         return calc_stepinfo(self.storage.storage['y'], self.storage.storage['hzh'][-1], ts=self.storage.storage['t'])
 
 def main():
-	pass
+    vartheta_func = lambda t: 0.1
+    h_func = lambda t: 12000
+    ctrl = Controller(h_func=h_func, vartheta_func=vartheta_func, use_ctrl=True, manual_ctrl=False, manual_stab=False, full_auto=True)
+    while not ctrl.is_done:
+        ctrl.step([])
 
 if __name__ == '__main__':
 	main()

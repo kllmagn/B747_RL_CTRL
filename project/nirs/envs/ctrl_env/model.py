@@ -5,7 +5,7 @@ import pathlib
 from shutil import copyfile
 import tempfile
 import pathlib
-#import weakref
+import weakref
 
 import uuid
 import numpy as np
@@ -15,9 +15,10 @@ from .rtwtypes import real_T, boolean_T
 class Model:
     def __init__(self, model="model", use_PID_SS=True, use_PID_CS=True):
         self.model = model
-        self.tmp_dir = tempfile.TemporaryDirectory(prefix="model")
-        tmp_path = pathlib.Path(self.tmp_dir.name) # временный путь до папки с временными библиотеками
         folder = pathlib.Path(__file__).parent.resolve() # папка данного скрипта
+        self.tmp_dir = os.path.join(folder, 'tmp_models') #tempfile.TemporaryDirectory(prefix="model")
+        tmp_path = self.tmp_dir #pathlib.Path(self.tmp_dir.name) # временный путь до папки с временными библиотеками
+        os.makedirs(tmp_path, exist_ok=True)
         self.dll_name = str(uuid.uuid4()) # временное название новой библиотеки
         platf = platform.system() # тип исполняющей системы (Linux или Windows)
         dll_type = '.so' if platf == 'Linux' else '_win64.dll' # тип библиотеки
@@ -51,8 +52,8 @@ class Model:
 
         # Параметры модели
         self._hzh = real_T.in_dll(self.dll, "h_zh") # требуемая высота полета
-        self._use_PID_SS = boolean_T.in_dll(self.dll, "use_PID_SS") # использовать ПИД-регулятор для СС
-        self._use_PID_CS = boolean_T.in_dll(self.dll, "use_PID_CS") # использовать ПИД-регулятор для СУ
+        self._use_PID_SS = real_T.in_dll(self.dll, "use_PID_SS") # использовать ПИД-регулятор для СС
+        self._use_PID_CS = real_T.in_dll(self.dll, "use_PID_CS") # использовать ПИД-регулятор для СУ
         self._PID_SS = (real_T*4).in_dll(self.dll, "PID_SS")
         self._PID_CS = (real_T*4).in_dll(self.dll, "PID_CS")
         self._PID_initial = np.array(list(self._PID_CS)+list(self._PID_SS))
@@ -65,6 +66,8 @@ class Model:
         self.initialize()
 
         self.labels = ['x', 'y', 'z', 'Vx', 'Vy', 'Vz', 'ax', 'ay', 'az', 'gamma', 'psi', 'vartheta', 'alpha', 'wx', 'wy', 'wz']
+
+        print(self._use_PID_CS, self._use_PID_SS)
 
     #def __del__(self):
     #    del self.dll # на всякий
@@ -81,6 +84,7 @@ class Model:
         """Step through the model Model."""
         self.__step()
         self.step_num += 1
+        #print(self.hzh, self.state_dict['y'], self.vartheta_ref, self.state_dict['vartheta'], self._use_PID_CS, self._use_PID_SS)
 
     def terminate(self):
         """Terminate the model Model."""
@@ -129,16 +133,16 @@ class Model:
         return bool(self._use_PID_SS.value)
 
     @use_PID_SS.setter
-    def use_PID_SS(self, value:bool):
-        self._use_PID_SS.value = value
+    def use_PID_SS(self, value:float):
+        self._use_PID_SS.value = float(value)
 
     @property
     def use_PID_CS(self) -> bool:
         return bool(self._use_PID_CS.value)
 
     @use_PID_CS.setter
-    def use_PID_CS(self, value:bool):
-        self._use_PID_CS.value = value
+    def use_PID_CS(self, value:float):
+        self._use_PID_CS.value = float(value)
 
     @property
     def PID_SS(self) -> np.ndarray:
@@ -195,8 +199,8 @@ class Model:
 
 def main():
     model = Model(use_PID_CS=False)
-    model.hzh = 100
-    model.vartheta_zh = 0
+    model.hzh = 12000
+    model.vartheta_zh = 0.1
     print(model.time, model.state)
     while model.time < 500:
         model.step()
