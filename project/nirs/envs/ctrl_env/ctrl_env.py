@@ -34,14 +34,14 @@ class ControllerEnv(gym.Env):
 		acts_low, acts_high = [], []
 		if self.ctrl.use_ctrl:
 			if self.ctrl.model.use_PID_CS:
-				if not self.ctrl.full_auto:
+				if not self.ctrl.no_correct:
 					acts_low.extend([0.9]*4)
 					acts_high.extend([1.1]*4)
 			else:
 				acts_low.extend([-self.ctrl.vartheta_max])
 				acts_high.extend([self.ctrl.vartheta_max])
 		if self.ctrl.model.use_PID_SS:
-			if not self.ctrl.full_auto:
+			if not self.ctrl.no_correct:
 				acts_low.extend([0.9]*4)
 				acts_high.extend([1.1]*4)
 		else:
@@ -59,13 +59,10 @@ class ControllerEnv(gym.Env):
 		add.extend([self.ctrl.vartheta_ref, self.ctrl.err_vartheta])
 		norms.extend([(-pi, pi), (-pi, pi)])
 
-		'''
-		if self.ctrl.use_ctrl:
-			ks.extend(['y'])
-			norms.extend([(0, 80000)])
-			add.extend([self.ctrl.model.hzh, self.ctrl.err_h])
-			norms.extend([(0, 80000), (-80000, 80000)])
-		'''
+		#ks.extend(['y'])
+		#norms.extend([(0, 80000)])
+		#add.extend([self.ctrl.model.hzh, self.ctrl.err_h])
+		#norms.extend([(0, 80000), (-80000, 80000)])
 
 		return ks, add, norms, len(ks)+len(add)
 
@@ -81,27 +78,36 @@ class ControllerEnv(gym.Env):
 		return self.state_box
 
 	def is_done(self):
-		return self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
+		return self.ctrl.is_nan_err or self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
 
 	def get_reward(self, action):
-		baseline = 1e-4
 		mode = self.reward_config.get('mode', 'standard')
 		if mode == 'standard':
-			Av = self.reward_config.get('Av', 0.55)
-			Adeltaz = self.reward_config.get('Adeltaz', 0.4)
-			kv = self.reward_config.get('kv', 180/pi)
-			kw = self.reward_config.get('kw', 1)
-			k1 = self.reward_config.get('k1', 100)
-			k2 = self.reward_config.get('k2', 1)
-			dvartheta = self.reward_config.get('dvartheta', 20*pi/180)
-			Aw = 1 - Av - Adeltaz
-			use_limit_punisher = True
-			rv = Av/(1+kv*abs(self.ctrl.err_vartheta))
-			rdeltaz = Adeltaz/(1+k2*(abs(self.ctrl.err_vartheta)/dvartheta)*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
-			rw = Aw/(1+kw*abs(self.ctrl.model.state_dict['wz'])/(1+k1*abs(self.ctrl.err_vartheta)/(20*pi/180)))
-			rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-			#print('rv:', rv, 'rdeltaz:', rdeltaz, 'rw:', rw)
-			return rv+rdeltaz+rw+rl
+			if self.ctrl.no_correct or self.ctrl.manual_stab:
+				Av = self.reward_config.get('Av', 0.55)
+				Adeltaz = self.reward_config.get('Adeltaz', 0.4)
+				kv = self.reward_config.get('kv', 180/pi)
+				kw = self.reward_config.get('kw', 1)
+				k1 = self.reward_config.get('k1', 100)
+				k2 = self.reward_config.get('k2', 1)
+				dvartheta = self.reward_config.get('dvartheta', 20*pi/180)
+				Aw = 1 - Av - Adeltaz
+				use_limit_punisher = True
+				rv = Av/(1+kv*abs(self.ctrl.err_vartheta))
+				rdeltaz = Adeltaz/(1+k2*(abs(self.ctrl.err_vartheta)/dvartheta)*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
+				rw = Aw/(1+kw*abs(self.ctrl.model.state_dict['wz'])/(1+k1*abs(self.ctrl.err_vartheta)/(20*pi/180)))
+				rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
+				#print('rv:', rv, 'rdeltaz:', rdeltaz, 'rw:', rw)
+				r = rv+rdeltaz+rw+rl
+			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
+				Ay = self.reward_config.get('Ay', 1)
+				rmin, emax = 1e-3, 12000
+				ky = (1/rmin-1)*1/emax
+				ry = Ay/(1+ky*abs(self.ctrl.err_h))
+				r = ry
+			else:
+				raise NotImplementedError
+			return r
 		elif mode == 'VRS': # velocity reward strategy
 			e = self.ctrl.err_vartheta
 			dedt = self.ctrl.deriv_dict.output('dvedt')

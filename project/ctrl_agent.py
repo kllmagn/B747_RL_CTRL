@@ -178,7 +178,7 @@ class ControllerAgent:
             env = self._wrap_env(env, os.path.join(self.log_dir, 'optimization'))
             self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp)
             if pretrain:
-                env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], full_auto=True)])
+                env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], no_correct=True)])
                 self.model = pretrain_agent_imit(self.model, env_expert, timesteps=50000, num_episodes=50)
                 es_startup = 20000
             else:
@@ -235,7 +235,7 @@ class ControllerAgent:
             self.model.set_env(env)
         else:
             self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, **self.hp)
-        env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], full_auto=True, manual_ctrl=False, manual_stab=False)])
+        env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], no_correct=True, manual_ctrl=False, manual_stab=False)])
         self.model = pretrain_agent_imit(self.model, env_expert, timesteps=timesteps, num_episodes=num_int_episodes, algo=algo)
         self.model.save(os.path.join(self.log_dir, self.bm_name))
 
@@ -310,11 +310,10 @@ class ControllerAgent:
         num_interactions = int(tk/self.env.ctrl.sample_time)
         mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True, on_episode_end=callb)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
-        y_neural, varth_neural = storage1.storage["y"], storage1.storage["vartheta"]
 
         print('Расчет перехода с использованием ПИД-регулятора [func]')
         env = ControllerEnv(h_func=hf, vartheta_func=vf, use_ctrl=ctrl_env_kwargs['use_ctrl'],\
-            full_auto=True, manual_ctrl=False, manual_stab=False, use_storage=True, is_testing=True, tk=tk, random_reset=ctrl_env_kwargs['random_reset'])
+            no_correct=True, manual_ctrl=False, manual_stab=False, use_storage=True, is_testing=True, tk=tk, random_reset=ctrl_env_kwargs['random_reset'])
         env = self._wrap_env(env, manual_reset=True)
         mean_reward, std_reward, storage2 = self.test_env(\
             num_interactions*int(self.env.ctrl.sample_time/self.env.ctrl.model.dt),\
@@ -342,10 +341,10 @@ if __name__ == '__main__':
     use_tb = False
     log_interval = 1000
     env_kwargs = dict(
-        use_ctrl = True, # использовать СУ (ПИД-регулятор авто или коррекция)
-        manual_ctrl = False, # вкл. ручное управление СУ (откл. поддержку ПИД-регулятора)
+        use_ctrl = False, # использовать СУ (ПИД-регулятор авто или коррекция)
+        manual_ctrl = True, # вкл. ручное управление СУ (откл. поддержку ПИД-регулятора)
         manual_stab = True, # вкл. ручное управление СС (откл. поддержку ПИД-регулятора)
-        full_auto = True, # не использовать коррекцию коэффициентов ПИД-регуляторов
+        no_correct = True, # не использовать коррекцию коэффициентов ПИД-регуляторов
         sample_time = 0.05,
         use_limiter = False
     )
@@ -358,7 +357,7 @@ if __name__ == '__main__':
         algo = 'GAIL' # BC, GAIL, AIRL
     )
     # ============ Обучение ============
-    train = False
+    train = True
     train_kwargs = dict(
         timesteps =  1_000_000,
         tk = 20, # секунд
@@ -381,8 +380,8 @@ if __name__ == '__main__':
         ctrl.train(**train_kwargs, **env_kwargs)
     #ctrl.test(**test_kwargs, **env_kwargs)
     # ==================================
-    varthetas = [] #-10*pi/180, -5*pi/180, 5*pi/180, 10*pi/180] 
-    hs = [12000, 10500, 11500, 12000]
+    varthetas = [-10*pi/180, -5*pi/180, 5*pi/180, 10*pi/180] 
+    hs = [10000, 10500, 11500, 12000]
     for i in range(len(varthetas)):
         print('='*30)
         print('Тестирую угол тангажа vartheta =', varthetas[i]*180/pi, '[град]')

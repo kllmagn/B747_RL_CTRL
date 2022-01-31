@@ -23,10 +23,10 @@ class Controller:
         sample_time:float=None,
         use_limiter=False,
         random_init = False, # случайно назначить начальные значения высоты и угла тангажа при инициализации модели
-        full_auto=False, # ПИД-СС (+ПИД-СУ при use_ctrl=True) в неуправляемом (автоматическом) режиме
+        no_correct=False, # ПИД-СС (+ПИД-СУ при use_ctrl=True) в неуправляемом (автоматическом) режиме
         random_reset=True, # случайный сброс
         ):
-        self.full_auto = full_auto
+        self.no_correct = no_correct
         self.use_ctrl = use_ctrl
         self.manual_ctrl = manual_ctrl
         self.manual_stab = manual_stab
@@ -57,7 +57,7 @@ class Controller:
             A = random.uniform(-10*pi/180, 10*pi/180)
             dv = random.uniform(-10*pi/180, 10*pi/180)
             self.h_func = lambda t: h_zh
-            w = random.uniform(0.01, 0.5) # Гц
+            w1, w2 = 0.01, 0.5
             self.vartheta_func = lambda t: A #np.clip([(A*sin(t))*sin((w*sin(t))*t) + dv], [-10*pi/180], [10*pi/180])[0]
             #self.use_ctrl = random.choice([True, False])
             #self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
@@ -97,24 +97,26 @@ class Controller:
         '''
         Выполнить один шаг симуляции с заданным массивом управляющих параметров.
         '''
+        # ================= Воздействие на модель ===================
         if not self.use_ctrl:
             self.model.vartheta_zh = self.vartheta_func(self.model.time)
         else:
             self.model.hzh = self.h_func(self.model.time)
             if self.model.use_PID_CS:
-                if not self.full_auto:
+                if not self.no_correct:
                     self.model.PID_CS = (self.model._PID_initial*action)[:4] if self.model.use_PID_SS\
                         else self.model._PID_initial[:4]*action[:4]
             else:
                 self.model.vartheta_zh = action[0]
         if self.model.use_PID_SS:
-            if not self.full_auto:
+            if not self.no_correct:
                 self.model.PID_SS = (self.model._PID_initial*action)[-4:] if self.model.use_PID_CS \
                     else self.model._PID_initial[-4:]*action[-4:]
         else:
             #self.w_deltaz = action[-1]
             #self.model.deltaz = np.clip([self.model.deltaz+self.w_deltaz], [-17*pi/180], [17*pi/180])[0]
             self.model.deltaz = action[-1]
+        # ===========================================================
         self.state_backup = self.model.state
         self.deltaz_backup = self.model.deltaz if self.manual_stab else self.model.deltaz_ref
         self.model.step() # производим симуляцию модели на один шаг
@@ -159,6 +161,10 @@ class Controller:
         return self.use_limiter and (abs(self.model.state_dict['vartheta']) > 5*pi/180+self.vartheta_max or self.model.deltaz > self.delta_max)
 
     @property
+    def is_nan_err(self) -> bool:
+        return np.isnan(np.sum(self.model.state))
+
+    @property
     def is_done(self) -> bool:
         return self.model.time >= self.tk
 
@@ -187,7 +193,7 @@ class Controller:
 def main():
     vartheta_func = lambda t: 0.1
     h_func = lambda t: 12000
-    ctrl = Controller(h_func=h_func, vartheta_func=vartheta_func, use_ctrl=True, manual_ctrl=False, manual_stab=False, full_auto=True)
+    ctrl = Controller(h_func=h_func, vartheta_func=vartheta_func, use_ctrl=True, manual_ctrl=False, manual_stab=False, no_correct=True)
     while not ctrl.is_done:
         ctrl.step([])
 
