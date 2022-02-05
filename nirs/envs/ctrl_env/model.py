@@ -60,7 +60,7 @@ def generate_signal(ref_name:str, param_type, getter_filter:typing.Union[typing.
     return signal
 
 class Model:
-    def __init__(self, model="model", use_PID_SS=True, use_PID_CS=True, manual_thrust=False, initial_state:np.ndarray=None):
+    def __init__(self, model="model", use_PID_SS=True, use_PID_CS=True, initial_state:np.ndarray=None):
         self.model = model
         folder = pathlib.Path(__file__).parent.resolve() # папка данного скрипта
         self.tmp_dir = os.path.join(folder, 'tmp_models') #tempfile.TemporaryDirectory(prefix="model")
@@ -106,7 +106,6 @@ class Model:
         self._PID_CS = (real_T*4).in_dll(self.dll, "PID_CS")
         self._deltaz = real_T.in_dll(self.dll, "deltaz") # угол отклонения рулей (ручное управление)
         self._vartheta_zh = real_T.in_dll(self.dll, "vartheta") # желаемый тангаж (ручное управление)
-        self._manual_thrust = real_T.in_dll(self.dll, 'manual_thrust') # использовать режим ручного управления тягой
         self._P = real_T.in_dll(self.dll, 'P') # ручное значение тяги
 
         # Фильтры сигналов
@@ -140,7 +139,6 @@ class Model:
         Model.PID_CS = generate_param('_PID_CS', np.ndarray)
         Model.deltaz = generate_param('_deltaz', float)
         Model.vartheta_zh = generate_param('_vartheta_zh', float)
-        Model.manual_thrust = generate_param('_manual_thrust', float)
         Model.P = generate_param('_P', float)
 
         self._PID_initial = np.array(list(self._PID_CS)+list(self._PID_SS))
@@ -149,7 +147,6 @@ class Model:
             self.state0 = initial_state
         self.use_PID_CS = use_PID_CS
         self.use_PID_SS = use_PID_SS
-        self.manual_thrust = manual_thrust
 
         self.initialize()
 
@@ -182,7 +179,7 @@ class Model:
     
 
 def main():
-    model = Model(use_PID_CS=True, manual_thrust=True, initial_state=np.array([100, 1000, 50, 300, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+    model = Model(use_PID_CS=True, initial_state=np.array([100, 1000, 50, 300, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
     model.hzh = 12000
     model.P = 300000
     model.vartheta_zh = 0.1

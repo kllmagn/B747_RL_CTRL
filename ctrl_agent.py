@@ -192,27 +192,6 @@ class ControllerAgent:
                 self.model.learn(total_timesteps=total_timesteps, callback=cb_list)
             self.model = self.net_class.load(os.path.join(savebest_dir, 'best_model.zip'))
             return cb1.best_mean_reward
-            #mean_reward, std_reward = evaluate_policy(self.model, env, n_eval_episodes=10, render=True)
-            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
-            #return mean_reward
-            '''
-            env = ControllerEnv(*ctrl_env_args, h_func=lambda t: 11000, vartheta_func=lambda t: 10*pi/180, use_storage=True,\
-            is_testing=True, **ctrl_env_kwargs)
-            env = self._wrap_env(env)
-            tp = None
-            tk = ctrl_env_kwargs['tk']
-            def callb(env):
-                nonlocal tp
-                ctrl_obj = env.get_attr('ctrl')[0]
-                if ctrl_obj.use_ctrl:
-                    data = ctrl_obj.stepinfo_CS()
-                else:
-                    data = ctrl_obj.stepinfo_SS()
-                tp = data['settling_time']
-            num_interactions = int(tk/self.env.ctrl.sample_time)
-            mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True, on_episode_end=callb)
-            return tp
-            '''
 
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=200, callbacks=[save_model_callback])
@@ -262,6 +241,41 @@ class ControllerAgent:
         cb = CallbackList([cb1, cb3]) #, cb2])
         self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval)
 
+    def convert_to_onnx(self, filename:str):
+        self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name))
+        if type(self.model) not in [PPO, A2C]:
+            raise NotImplementedError
+        class OnnxablePolicy(th.nn.Module):
+            def __init__(self, extractor, action_net, value_net):
+                super(OnnxablePolicy, self).__init__()
+                self.extractor = extractor
+                self.action_net = action_net
+                self.value_net = value_net
+            def forward(self, observation):
+                # NOTE: You may have to process (normalize) observation in the correct
+                #       way before using this. See `common.preprocessing.preprocess_obs`
+                #from stable_baselines3.common.preprocessing import preprocess_obs
+                #preprocess_obs()
+                action_hidden, value_hidden = self.extractor(observation)
+                print(action_hidden, value_hidden)
+                return self.action_net(action_hidden), self.value_net(value_hidden)
+        self.model.policy.to("cpu")
+        onnxable_model = OnnxablePolicy(self.model.policy.mlp_extractor, self.model.policy.action_net, self.model.policy.value_net)
+        dummy_input = th.randn(1, 5)
+        th.onnx.export(onnxable_model, dummy_input, filename, opset_version=9)
+
+    def test_onnx(self, filename:str):
+        import onnx
+        import onnxruntime as ort
+        import numpy as np
+        onnx_model = onnx.load(filename)
+        onnx.checker.check_model(onnx_model)
+        observation = np.zeros((1, 5)).astype(np.float32)
+        ort_sess = ort.InferenceSession(filename)
+        action, value = ort_sess.run(None, {'input.1': observation})
+        action = np.clip(action, -17*pi/180, 17*pi/180)
+        print('action:', action, 'value:', value)
+
     def test_env(self, num_interactions:int, env, no_action=False, use_render=False, on_episode_end=None):
         if not no_action:
             self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name))
@@ -294,6 +308,7 @@ class ControllerAgent:
 
         self.env = ControllerEnv(*ctrl_env_args, h_func=ht_func, vartheta_func=varthetat_func, use_storage=True,\
             is_testing=True, **ctrl_env_kwargs)
+
         tk = ctrl_env_kwargs['tk']
         print('Расчет перехода с использованием нейросетевого регулятора [func]')
         env = self._wrap_env(self.env, manual_reset=True)
@@ -332,7 +347,7 @@ class ControllerAgent:
         if self.model is not None:
             print(self.model.policy)
         else:
-            print('Модель отсутствует.')
+            print('Невозможно отобразить структуру модели: модель отсутствует.')
 
 
 if __name__ == '__main__':
@@ -357,7 +372,7 @@ if __name__ == '__main__':
         algo = 'GAIL' # BC, GAIL, AIRL
     )
     # ============ Обучение ============
-    train = True
+    train = False
     train_kwargs = dict(
         timesteps =  1_000_000,
         tk = 20, # секунд
@@ -380,8 +395,8 @@ if __name__ == '__main__':
         ctrl.train(**train_kwargs, **env_kwargs)
     #ctrl.test(**test_kwargs, **env_kwargs)
     # ==================================
-    varthetas = [-10*pi/180, -5*pi/180, 5*pi/180, 10*pi/180] 
-    hs = [10000, 10500, 11500, 12000]
+    varthetas = [] #-10*pi/180, -5*pi/180, 5*pi/180, 10*pi/180] 
+    hs = [] #10000, 10500, 11500, 12000]
     for i in range(len(varthetas)):
         print('='*30)
         print('Тестирую угол тангажа vartheta =', varthetas[i]*180/pi, '[град]')
@@ -395,3 +410,5 @@ if __name__ == '__main__':
         storage = ctrl.test(tk=60, ht_func = lambda t: hs[i], varthetat_func = lambda t: 10*pi/180, **env_kwargs)
         storage.save(f'data_h_{hs[i]}.xlsx')
     ctrl.show()
+    ctrl.convert_to_onnx('model.onnx')
+    ctrl.test_onnx('model.onnx')
