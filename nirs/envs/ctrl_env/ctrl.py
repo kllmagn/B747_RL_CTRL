@@ -52,8 +52,12 @@ class Controller:
 
     def reset(self):
         # 0.01 Гц, 0.5 Гц | -10*pi/180<=A<=10*pi/180 | sin
+        h0 = random.uniform(1000, 11000)
+        if self.random_init:
+            Vx = 227 #random.uniform(200, 227)
+            self.model.set_initial([0, h0, 0, Vx, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         if self.random_reset:
-            h_zh = random.uniform(10800, 11300)
+            h_zh = h0+random.uniform(-1000, 1000)
             A = random.uniform(-10*pi/180, 10*pi/180)
             dv = random.uniform(-10*pi/180, 10*pi/180)
             self.h_func = lambda t: h_zh
@@ -63,12 +67,6 @@ class Controller:
             #self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
             #print('Устанавливаю vartheta_zh =', vartheta_zh*180/pi)
         self.model.initialize()
-        if self.random_init:
-            h0 = random.uniform(10800, 11300)
-            vartheta0 = random.uniform(-10*pi/180, 10*pi/180)
-            # self.model.vartheta0 = vartheta0
-            # self.model.h0 = h0
-            raise ValueError('There is no support for initial state randomization yet.')
         self.storage.clear_all()
         self.vth_err.reset()
         
@@ -77,12 +75,14 @@ class Controller:
         #self.model.initialize()
 
     def post_step(self, state=None):
-        self.vth_err.input(self.err_vartheta)
+        self.vth_err.input(abs(self.err_vartheta))
         self.deriv_dict.input('dvedt', self.err_vartheta*180/pi, self.model.dt)
         if self.use_storage:
             # используется режим записи состояния модели
             self.storage.record("t", self.model.time)
             self.storage.record('deltaz', (self.model.deltaz if self.manual_stab else self.model.deltaz_ref)*180/pi)
+            self.storage.record('deltaz_ref', self.model.deltaz_ref*180/pi)
+            self.storage.record('deltaz_real', self.model.deltaz_real*180/pi)
             self.storage.record('hzh', self.model.hzh)
             self.storage.record('vartheta_ref', self.vartheta_ref*180/pi)
             if state is None:
@@ -114,7 +114,7 @@ class Controller:
                     else self.model._PID_initial[-4:]*action[-4:]
         else:
             #self.w_deltaz = action[-1]
-            #self.model.deltaz = np.clip([self.model.deltaz+self.w_deltaz], [-17*pi/180], [17*pi/180])[0]
+            #self.model.deltaz = np.clip([self.model.deltaz+self.w_deltaz*self.sample_time], [-17*pi/180], [17*pi/180])[0]
             self.model.deltaz = action[-1]
         # ===========================================================
         self.state_backup = self.model.state
@@ -149,6 +149,11 @@ class Controller:
     def err_vartheta(self) -> float:
         '''Ошибка между требуемым и фактическим углами тангажа.'''
         return self.vartheta_ref-self.model.state_dict['vartheta']
+
+    @property
+    def err_vartheta_rel(self) -> float:
+        '''Относительная ошибка между требуемым и фактическим углами тангажа.'''
+        return self.err_vartheta if self.vartheta_ref == 0 else self.err_vartheta/self.vartheta_ref
 
     @property
     def err_h(self) -> float:

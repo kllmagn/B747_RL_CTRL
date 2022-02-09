@@ -56,8 +56,8 @@ class ControllerEnv(gym.Env):
 
 		ks.extend(['alpha', 'vartheta', 'wz'])
 		norms.extend([(-pi, pi), (-pi, pi), (-pi, pi)])
-		add.extend([self.ctrl.vartheta_ref, self.ctrl.err_vartheta])
-		norms.extend([(-pi, pi), (-pi, pi)])
+		add.extend([self.ctrl.err_vartheta, self.ctrl.vartheta_ref]) #, self.ctrl.model.deltaz_real, self.ctrl.model.deltaz])
+		norms.extend([(-pi, pi), (-pi, pi)]) #, (-pi, pi), (-pi, pi)])
 
 		#ks.extend(['y'])
 		#norms.extend([(0, 80000)])
@@ -84,21 +84,29 @@ class ControllerEnv(gym.Env):
 		mode = self.reward_config.get('mode', 'standard')
 		if mode == 'standard':
 			if self.ctrl.no_correct or self.ctrl.manual_stab:
-				Av = self.reward_config.get('Av', 0.55)
-				Adeltaz = self.reward_config.get('Adeltaz', 0.4)
-				kv = self.reward_config.get('kv', 180/pi)
-				kw = self.reward_config.get('kw', 1)
-				k1 = self.reward_config.get('k1', 100)
-				k2 = self.reward_config.get('k2', 1)
+				rmin = 0.07
+				v_max, vint_max, w_max, deltaz_max = 20*pi/180, 1000, 0.2, 50*pi/180
+				calc_k = lambda max_val: -log(rmin)/max_val # e^(-k*max_val) = rmin => -k*max_val = log(rmin) => k = -log(rmin)/max_val
+				Av = self.reward_config.get('Av', 1)
+				Avint = self.reward_config.get('Avint', 0)
+				Aw = self.reward_config.get('Aw', 0)
+				Adeltaz = self.reward_config.get('Adeltaz', 0)
+				kv = self.reward_config.get('kv', calc_k(v_max)) #1/(20*pi/180)) #180/pi)
+				kvint = self.reward_config.get('kvint', calc_k(vint_max))
+				kw = self.reward_config.get('kw', calc_k(w_max)) #0) #0.1/0.1)
+				kdeltaz = self.reward_config.get('kdeltaz', calc_k(deltaz_max)) #0) #1/(34*pi/180))
 				dvartheta = self.reward_config.get('dvartheta', 20*pi/180)
-				Aw = 1 - Av - Adeltaz
 				use_limit_punisher = True
-				rv = Av/(1+kv*abs(self.ctrl.err_vartheta))
-				rdeltaz = Adeltaz/(1+k2*(abs(self.ctrl.err_vartheta)/dvartheta)*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
-				rw = Aw/(1+kw*abs(self.ctrl.model.state_dict['wz'])/(1+k1*abs(self.ctrl.err_vartheta)/(20*pi/180)))
-				rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-				#print('rv:', rv, 'rdeltaz:', rdeltaz, 'rw:', rw)
-				r = rv+rdeltaz+rw+rl
+				#rv = Av/(1+kv*abs(self.ctrl.err_vartheta))
+				#rvint = Avint/(1+10*self.ctrl.vth_err.output()) #kv*abs(self.ctrl.err_vartheta))
+				#rdeltaz = Adeltaz/(1+kdeltaz*(abs(self.ctrl.err_vartheta)/dvartheta)*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
+				#rw = Aw/(1+kw*abs(self.ctrl.model.state_dict['wz'])*k1*abs(self.ctrl.err_vartheta)/dvartheta)
+				#rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
+				rv = Av*exp(-kv*abs(self.ctrl.err_vartheta))
+				rw = Aw*exp(-kw*abs(self.ctrl.model.state_dict['wz']))
+				rvint = Avint*exp(kvint*abs(self.ctrl.vth_err.output()))
+				rdeltaz = Adeltaz*exp(-kdeltaz*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref)) #rv+rw+rvint+rdeltaz+rl
+				r = rv+rw+rvint+rdeltaz
 			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
 				Ay = self.reward_config.get('Ay', 1)
 				rmin, emax = 1e-3, 12000

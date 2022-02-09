@@ -6,11 +6,9 @@ from shutil import copyfile
 import tempfile
 import pathlib
 import typing
-import weakref
 
 import uuid
 import numpy as np
-from torch import ge
 
 from .rtwtypes import real_T, boolean_T
 
@@ -96,6 +94,7 @@ class Model:
         self._mz = real_T.in_dll(self.dll, "mz")
         self._Kalpha = real_T.in_dll(self.dll, "K_alpha")
         self._dCm_ddeltaz = real_T.in_dll(self.dll, "dCm_ddeltaz")
+        self._deltaz_real = real_T.in_dll(self.dll, 'deltaz_real') # реальный угол отклонения рулей (выход рулевого привода)
 
         # Параметры модели Simulink
         self._state0 = (real_T*16).in_dll(self.dll, 'state0') # начальное состояние модели
@@ -107,6 +106,7 @@ class Model:
         self._deltaz = real_T.in_dll(self.dll, "deltaz") # угол отклонения рулей (ручное управление)
         self._vartheta_zh = real_T.in_dll(self.dll, "vartheta") # желаемый тангаж (ручное управление)
         self._P = real_T.in_dll(self.dll, 'P') # ручное значение тяги
+        self._aero_err = (real_T*4).in_dll(self.dll, 'aero_err') # вектор ошибок а/д коэффициентов (CXa, CYa, mz, mz_deltaz)
 
         # Фильтры сигналов
         def remove_nan(val):
@@ -116,6 +116,7 @@ class Model:
         Model.time = generate_signal('_time', float)
         Model.vartheta_ref = generate_signal('_vartheta_ref', float)
         Model.deltaz_ref = generate_signal('_deltaz_ref', float)
+        Model.deltaz_real = generate_signal('_deltaz_real', float)
         Model.CXa = generate_signal('_CXa', float)
         Model.CYa = generate_signal('_CYa', float)
         Model.mz = generate_signal('_mz', float)
@@ -140,6 +141,7 @@ class Model:
         Model.deltaz = generate_param('_deltaz', float)
         Model.vartheta_zh = generate_param('_vartheta_zh', float)
         Model.P = generate_param('_P', float)
+        Model.aero_err = generate_param('_aero_err', float)
 
         self._PID_initial = np.array(list(self._PID_CS)+list(self._PID_SS))
         # назначение конфигурации в соответствии с аргументами
@@ -172,6 +174,9 @@ class Model:
         """Terminate the model Model."""
         self.__model_terminate()
 
+    def set_initial(self, state:np.ndarray):
+        self.state0 = state
+
     @property
     def state_dict(self) -> dict:
         st = self.state
@@ -180,13 +185,13 @@ class Model:
 
 def main():
     model = Model(use_PID_CS=True, initial_state=np.array([100, 1000, 50, 300, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
-    model.hzh = 12000
+    model.hzh = 2000
     model.P = 300000
     model.vartheta_zh = 0.1
     print(model.time, model.state_dict)
     while model.time < 2000:
         model.step()
-        #print(model.time, model.state)
+        print(model.time, model.state_dict['vartheta'], model.state_dict['y'], model.deltaz_real)
     print(model.time, model.state_dict)
 
 if __name__ == '__main__':
