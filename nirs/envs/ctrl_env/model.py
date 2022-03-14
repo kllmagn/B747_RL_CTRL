@@ -62,14 +62,15 @@ class Model:
         self.model = model
         folder = pathlib.Path(__file__).parent.resolve() # папка данного скрипта
         self.tmp_dir = os.path.join(folder, 'tmp_models') #tempfile.TemporaryDirectory(prefix="model")
-        tmp_path = self.tmp_dir #pathlib.Path(self.tmp_dir.name) # временный путь до папки с временными библиотеками
-        os.makedirs(tmp_path, exist_ok=True)
+        #pathlib.Path(self.tmp_dir.name) # временный путь до папки с временными библиотеками
+        os.makedirs(self.tmp_dir, exist_ok=True)
         self.dll_name = str(uuid.uuid4()) # временное название новой библиотеки
         platf = platform.system() # тип исполняющей системы (Linux или Windows)
         dll_type = '.so' if platf == 'Linux' else '_win64.dll' # тип библиотеки
         self.dll_path = os.path.join(folder, f"{model}{dll_type}") # путь к исходному файлу
-        copyfile(self.dll_path, os.path.join(tmp_path, f"{self.dll_name}{dll_type}")) # копируем исходную библиотеку во временный файл
-        self.dll_path = os.path.join(tmp_path, f"{self.dll_name}{dll_type}") # новый (временный) путь к библиотеке
+        tmp_path = os.path.join(self.tmp_dir, f"{self.dll_name}{dll_type}") # новый (временный) путь к библиотеке
+        copyfile(self.dll_path, tmp_path) # копируем исходную библиотеку во временный файл
+        self.dll_path = tmp_path
         if platf == "Linux":
             self.dll = ctypes.cdll.LoadLibrary(self.dll_path)
         elif platform.system() == "Windows":
@@ -94,8 +95,21 @@ class Model:
         self._mz = real_T.in_dll(self.dll, "mz")
         self._Kalpha = real_T.in_dll(self.dll, "K_alpha")
         self._dCm_ddeltaz = real_T.in_dll(self.dll, "dCm_ddeltaz")
+        self._deltaz_com = real_T.in_dll(self.dll, 'deltaz_com') # командный угол отклонения рулей (вход рулевого привода / без насыщения)
         self._deltaz_real = real_T.in_dll(self.dll, 'deltaz_real') # реальный угол отклонения рулей (выход рулевого привода)
-
+        self._dvartheta = real_T.in_dll(self.dll, 'dvartheta')
+        self._dvartheta_int = real_T.in_dll(self.dll, 'dvartheta_int')
+        self._dvartheta_dt = real_T.in_dll(self.dll, 'dvartheta_dt')
+        self._dvartheta_dt_dt = real_T.in_dll(self.dll, 'dvartheta_dt_dt')
+        self._TAE = real_T.in_dll(self.dll, 'TAE')
+        self._ITAE = real_T.in_dll(self.dll, 'ITAE')
+        self._TSE = real_T.in_dll(self.dll, 'TSE')
+        self._ITSE = real_T.in_dll(self.dll, 'ITSE')
+        self._AE = real_T.in_dll(self.dll, 'AE')
+        self._IAE = real_T.in_dll(self.dll, 'IAE')
+        self._SE = real_T.in_dll(self.dll, 'SE')
+        self._ISE = real_T.in_dll(self.dll, 'ISE')
+        
         # Параметры модели Simulink
         self._state0 = (real_T*16).in_dll(self.dll, 'state0') # начальное состояние модели
         self._hzh = real_T.in_dll(self.dll, "h_zh") # требуемая высота полета
@@ -116,12 +130,25 @@ class Model:
         Model.time = generate_signal('_time', float)
         Model.vartheta_ref = generate_signal('_vartheta_ref', float)
         Model.deltaz_ref = generate_signal('_deltaz_ref', float)
+        Model.deltaz_com = generate_signal('_deltaz_com', float)
         Model.deltaz_real = generate_signal('_deltaz_real', float)
         Model.CXa = generate_signal('_CXa', float)
         Model.CYa = generate_signal('_CYa', float)
         Model.mz = generate_signal('_mz', float)
         Model.Kalpha = generate_signal('_Kalpha', float)
         Model.dCm_ddeltaz = generate_signal('_dCm_ddeltaz', float)
+        Model.dvartheta = generate_signal('_dvartheta', float)
+        Model.dvartheta_int = generate_signal('_dvartheta_int', float)
+        Model.dvartheta_dt = generate_signal('_dvartheta_dt', float)
+        Model.dvartheta_dt_dt = generate_signal('_dvartheta_dt_dt', float)
+        Model.TAE = generate_signal('_TAE', float)
+        Model.ITAE = generate_signal('_ITAE', float)
+        Model.TSE = generate_signal('_TSE', float)
+        Model.ITSE = generate_signal('_ITSE', float)
+        Model.AE = generate_signal('_AE', float)
+        Model.IAE = generate_signal('_IAE', float)
+        Model.SE = generate_signal('_SE', float)
+        Model.ISE = generate_signal('_ISE', float)
 
         Model.state0 = generate_param('_state0', np.ndarray) # ПАРАМЕТР
         def set_initial(val):

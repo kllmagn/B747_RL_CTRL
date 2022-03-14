@@ -17,6 +17,7 @@ from stable_baselines3.common.noise import NormalActionNoise, OrnsteinUhlenbeckA
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback, CallbackList
 from stable_baselines3.a2c.policies import ActorCriticPolicy
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.sb2_compat.rmsprop_tf_like import RMSpropTFLike
 from callbacks import *
 from tensorboard import program
 
@@ -44,8 +45,15 @@ hyperparams = {
         'learning_starts': int(10000)
     },
     PPO: {
-
-    },
+        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[321, 210, 206]),
+        'learning_rate': 0.0008119972057477548,
+        'gae_lambda': 0.9299298432752194,
+        'n_steps': 155,
+        'ent_coef': 0.005236684910302408,
+        'vf_coef': 0.46999041106889117,
+        'batch_size': 155, #120,
+        'gamma': 0.8351629380091844
+        },
     TD3: {
         'gamma': 0.9999,
         'learning_rate': 0.00045845313560993127,
@@ -56,14 +64,48 @@ hyperparams = {
         #'noise_type': None,
         #'noise_std': 0.37398891007928636,
         'policy_kwargs': dict(net_arch=[400, 300])
+        },
+    'A2C_bad': {
+        #'gamma': 0.7499538451822588,
+        #'max_grad_norm': 0.5843626531806608,
+        #'use_rms_prop': False,
+        #'gae_lambda': 0.8669317637280056,
+        #'n_steps': 124,
+        #'learning_rate': 4.903911208190676e-05,
+        #'ent_coef': 0.006097913388504438,
+        #'vf_coef': 0.1920274381094792,
+        'policy_kwargs': dict(ortho_init=True, activation_fn=th.nn.Tanh, net_arch=[300, 300])
+        },
+    'A2C_repl': {
+        'gamma': 0.8909336106571547,
+        'max_grad_norm': 0.6649707879260869,
+        'use_rms_prop': True,
+        'gae_lambda': 0.8551027353954989,
+        'n_steps': 240,
+        'learning_rate': 0.0008179783358248342,
+        'ent_coef': 0.005168290493653929,
+        'vf_coef': 0.19324489075054455,
+        'policy_kwargs': dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[359, 390])
+    },
+    'A2C_backup':  {
+        'gamma': 0.943688888281661,
+        'max_grad_norm': 0.5409540085484815,
+        'use_rms_prop': False,
+        'gae_lambda': 0.6241936925284,
+        'n_steps': 251,
+        'learning_rate': 0.0009392966757968232,
+        'ent_coef': 0.006226426696876032,
+        'vf_coef': 0.47678293409139105,
+        'policy_kwargs': dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[339, 368, 331])
     },
     A2C: {
-        'use_rms_prop': False,
+        #'use_sde': True,
+        #'use_rms_prop': True,
         'learning_rate': 0.00013219127332957597,
         'ent_coef': 0.0026650043954570186,
         'vf_coef': 0.10796014008883446,
-        'policy_kwargs': dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[337, 380])
-    },
+        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[512, 512]) #, optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-5))
+        },
     'A2C_old': {
         'gamma': 0.95,
         'normalize_advantage': True,
@@ -87,6 +129,17 @@ hyperparams = {
         'ent_coef': 0.0026650043954570186,
         'vf_coef': 0.10796014008883446,
         'policy_kwargs': dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[dict(pi=[64, 64], vf=[64, 64])]) #dict(pi=[254,254], vf=[254,254])])
+    },
+    'A2C_1': {
+        'gamma': 0.9,
+        'max_grad_norm': 0.8,
+        'use_rms_prop': False,
+        'gae_lambda': 0.9,
+        'n_steps': 8,
+        'learning_rate': 1.0402502087400854e-05,
+        'ent_coef': 0.021529322791225745,
+        'vf_coef': 0.4844797321283937,
+        'policy_kwargs': dict(ortho_init=True, activation_fn=th.nn.Tanh, net_arch=[348, 354])
     }
 }
 
@@ -105,7 +158,11 @@ class ControllerAgent:
         else:
             self.tb, self.tb_url = None, None
         self.net_class = net_class
-        self.hp = hyperparams[self.net_class] if self.net_class in hyperparams else {}
+        if self.net_class in hyperparams:
+            print('Using existing model configuration.')
+            self.hp = hyperparams[self.net_class]
+        else:
+            self.hp = {}
         self.model = None
         self.bm_name = 'best_model.zip'
 
@@ -113,7 +170,7 @@ class ControllerAgent:
         if use_monitor:
             env = Monitor(env, os.path.join((monitor_dir if monitor_dir else self.log_dir), 'monitor.csv'))
         env = DummyVecEnv([lambda: env], manual_reset=manual_reset)
-        #env = VecNormalize(env, gamma=0.95, norm_reward=False)
+        #env = VecNormalize(env, gamma=0.95, norm_obs = False, norm_reward=True)
         #env.seed(1)
         return env
 
@@ -130,17 +187,15 @@ class ControllerAgent:
             if opt_hp:
                 if self.net_class is A2C:
                     hp = {
-                    'gamma': trial.suggest_float('gamma', 0.7, 0.99),
-                    'max_grad_norm': trial.suggest_float('max_grad_norm', 0.5, 0.8),
+                    'gamma': trial.suggest_categorical("gamma", [0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 0.9999]),
+                    'max_grad_norm': trial.suggest_categorical("max_grad_norm", [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 2, 5]),
                     'use_rms_prop': trial.suggest_categorical('use_rms_prop', [True, False]),
-                    'gae_lambda': trial.suggest_float('gae_lambda', 0.6, 1.0),
-                    'n_steps': trial.suggest_int('n_steps', 1, 256),
-                    'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3),
-                    #'ent_coef': 0.0026650043954570186,
-                    #'vf_coef': 0.10796014008883446,
-                    'ent_coef': trial.suggest_float('ent_coef', 0, 0.01),
-                    'vf_coef': trial.suggest_float('vf_coef', 0.05, 0.6),
-                    'policy_kwargs': dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 300, 400) for i in range(trial.suggest_int('n_depth', 2, 3))]) #dict(pi=[254,254], vf=[254,254])])
+                    'gae_lambda': trial.suggest_categorical("gae_lambda", [0.8, 0.9, 0.92, 0.95, 0.98, 0.99, 1.0]),
+                    'n_steps': trial.suggest_categorical("n_steps", [8, 16, 32, 64, 128, 256, 512, 1024, 2048]),
+                    'learning_rate': trial.suggest_loguniform("learning_rate", 1e-5, 1),
+                    'ent_coef': trial.suggest_loguniform("ent_coef", 0.00000001, 0.1),
+                    'vf_coef': trial.suggest_uniform("vf_coef", 0, 1),
+                    'policy_kwargs': dict(ortho_init=trial.suggest_categorical("ortho_init", [False, True]), activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 300, 400) for i in range(trial.suggest_int('n_depth', 2, 3))]) #dict(pi=[254,254], vf=[254,254])])
                     }
                 elif self.net_class is TD3:
                     hp = {
@@ -179,9 +234,9 @@ class ControllerAgent:
             else:
                 hp = self.hp
             reward_config = {
-                'kv': trial.suggest_float('kv', 1/(20*pi/180), 180/pi),
-                'kw': trial.suggest_float('kw', 1, 1000),
-                'kdeltaz': trial.suggest_float('kdeltaz', 1/(34*pi/180), 180/pi)
+                'k1': trial.suggest_float('k1', 0.1, 1),
+                'k2': trial.suggest_float('k2', 0.1, 1),
+                'k3': trial.suggest_float('k3', 0.1, 1)
             }
             env = ControllerEnv(*ctrl_env_args, reward_config=reward_config, use_storage=True, **ctrl_env_kwargs)
             env = self._wrap_env(env, os.path.join(self.log_dir, 'optimization'))
@@ -194,16 +249,17 @@ class ControllerAgent:
                 es_startup = 0
             total_timesteps = training_timesteps
             savebest_dir = os.path.join(self.log_dir, 'optimization')
-            cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].vth_err.output(), 'vth_err', 10000, log_dir=savebest_dir, maximize=False)
-            cb = EarlyStopping(lambda: cb2.mean_metric, 'vth_err', 10000, 4, verbose=1, startup_step=es_startup, maximize=False)
+            #cb2 = SaveOnBestTrainingRewardCallback(10000, savebest_dir, 1)
+            cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].model.TAE, 'TAE', 10000, log_dir=savebest_dir, maximize=opt_max) #vth_err_abs.output()
+            cb = EarlyStopping(lambda: cb2.mean_metric, 'mean_metric', 10000, 2, verbose=1, startup_step=es_startup, maximize=opt_max)
             with ProgressBarManager(total_timesteps) as callback:
-                cb_list = CallbackList([callback, cb, cb2])
+                cb_list = CallbackList([callback, cb2, cb]) #, cb, cb2])
                 self.model.learn(total_timesteps=total_timesteps, callback=cb_list)
             self.model = self.net_class.load(os.path.join(savebest_dir, 'best_model.zip'))
-            return cb2.best_metric
+            return cb2.mean_metric
 
         study = optuna.create_study(direction=("maximize" if opt_max else "minimize"))
-        study.optimize(objective, n_trials=200, callbacks=[save_model_callback])
+        study.optimize(objective, n_trials=500, callbacks=[save_model_callback])
         params = study.best_params
         #params = optimize.minimize(objective_core, [1/(20*pi/180), 5/0.1, 1/(34*pi/180)])
         print('Лучшие параметры:', params)
@@ -228,7 +284,7 @@ class ControllerAgent:
         self.model = pretrain_agent_imit(self.model, env_expert, timesteps=timesteps, num_episodes=num_int_episodes, algo=algo)
         self.model.save(os.path.join(self.log_dir, self.bm_name))
 
-    def train(self, *ctrl_env_args, timesteps=50000, preload=False, optimize=False, opt_max=True, opt_hp=True, verbose:int=1, log_interval:int=1000, **ctrl_env_kwargs):
+    def train(self, *ctrl_env_args, timesteps=50000, preload=False, use_es=True, optimize=False, opt_max=True, opt_hp=True, verbose:int=1, log_interval:int=1000, **ctrl_env_kwargs):
         self.env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
         env = self._wrap_env(self.env)
         if optimize:
@@ -246,9 +302,12 @@ class ControllerAgent:
                 print('Создаю новую модель:', str(self.net_class))
                 self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, verbose=verbose, **self.hp)
         cb1 = SaveOnBestTrainingRewardCallback(10000, self.log_dir, 1)
-        #SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].vth_err.output(), 'vth_err', 10000, log_dir=self.log_dir, maximize=False)
-        cb2 = EarlyStopping(lambda: cb1.best_mean_reward, 'vth_err', 10000, 4, verbose=1, maximize=True)
-        cb = CallbackList([cb1, cb2])
+        cb_metric = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].deltaz_diff_int.output(), 'deltaz_diff_int', 10000, log_dir=self.log_dir, maximize=False)
+        cb2 = EarlyStopping(lambda: cb1.mean_reward, 'vth_err', 10000, 4, verbose=1, maximize=True)
+        cbs = [cb1]
+        if use_es:
+            cbs.append(cb2)
+        cb = CallbackList(cbs)
         self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval)
 
     def convert_to_onnx(self, filename:str):
@@ -269,7 +328,7 @@ class ControllerAgent:
                 return self.action_net(action_hidden), self.value_net(value_hidden)
         self.model.policy.to("cpu")
         onnxable_model = OnnxablePolicy(self.model.policy.mlp_extractor, self.model.policy.action_net, self.model.policy.value_net)
-        dummy_input = th.randn(1, 6)
+        dummy_input = th.randn(1, 3)
         th.onnx.export(onnxable_model, dummy_input, filename, opset_version=11, verbose=True)
 
     def test_onnx(self, filename:str):
@@ -278,7 +337,7 @@ class ControllerAgent:
         import numpy as np
         onnx_model = onnx.load(filename)
         onnx.checker.check_model(onnx_model)
-        observation = np.zeros((1, 6)).astype(np.float32)
+        observation = np.zeros((1, 3)).astype(np.float32)
         ort_sess = ort.InferenceSession(filename)
         action, value = ort_sess.run(None, {'input.1': observation})
         action = np.clip(action, -17*pi/180, 17*pi/180)
@@ -298,7 +357,7 @@ class ControllerAgent:
                 action = [0] if env.envs[0].env.ctrl.manual_stab else [env.envs[0].env.ctrl.model.deltaz_ref]
             else:
                 action, state = self.model.predict(obs, state=state, deterministic=True)
-            obs, reward, done, _ = env.step(action)
+            obs, _, done, _ = env.step(action)
             if done:
                 if on_episode_end:
                     on_episode_end(env)
@@ -355,6 +414,11 @@ class ControllerAgent:
 
     def show(self):
         if self.model is not None:
+            attrs = ['gamma', 'max_grad_norm', 'gae_lambda', 'n_steps', 'learning_rate', 'ent_coef', 'vf_coef']
+            print(self.model.policy.optimizer_class)
+            for k in attrs:
+                print(k, ':', self.model.__dict__[k])
+            print('='*20)
             print(self.model.policy)
         else:
             print('Невозможно отобразить структуру модели: модель отсутствует.')
@@ -362,36 +426,37 @@ class ControllerAgent:
 
 if __name__ == '__main__':
     # добавить таймер для обучения
-    net_class = PPO
-    use_tb = False
+    net_class = A2C
+    use_tb = True
     log_interval = 1000
     env_kwargs = dict(
         use_ctrl = False, # использовать СУ (ПИД-регулятор авто или коррекция)
         manual_ctrl = False, # вкл. ручное управление СУ (откл. поддержку ПИД-регулятора)
         manual_stab = True, # вкл. ручное управление СС (откл. поддержку ПИД-регулятора)
         no_correct = True, # не использовать коррекцию коэффициентов ПИД-регуляторов
-        sample_time = 0.01,
+        sample_time = 0.05,
         use_limiter = False,
-        random_init = True # случайная инициализация начального состояния
-        #reward_config={'kv': 23.02559907773439, 'kw': 123.40541803849644, 'kdeltaz': 6.523852550774975}
+        random_init = True, # случайная инициализация начального состояния
+        #reward_config={'k1': 0.5626263389608758, 'k2': 0.957988620443826, 'k3': 0.20433884176957848} #{'kv': 23.02559907773439, 'kw': 123.40541803849644, 'kdeltaz': 6.523852550774975}
     )
     # ===== Имитационное обучение ======
-    pretrain = False
+    pretrain = False 
     pretrain_kwargs = dict(
         timesteps = 1_000_000, # epochs (BC)
         preload = False,
         num_int_episodes = 200,
         algo = 'GAIL' # BC, GAIL, AIRL
     )
-    # ============ Обучение ============
+    # ============ Обучение =============
     train = False
     train_kwargs = dict(
-        timesteps =  1_000_000,
+        timesteps = 10000000,
         tk = 30, # секунд
         preload = False,
+        use_es = False,
         optimize = False,
-        opt_max=False,
-        opt_hp=False,
+        opt_max = False, #True,
+        opt_hp = False,
         verbose=int(use_tb),
         log_interval=log_interval
     )
@@ -409,7 +474,7 @@ if __name__ == '__main__':
         ctrl.train(**train_kwargs, **env_kwargs)
     #ctrl.test(**test_kwargs, **env_kwargs)
     # ==================================
-    varthetas = [-10*pi/180, -5*pi/180, 5*pi/180, 10*pi/180] 
+    varthetas = [5*pi/180, 10*pi/180, -10*pi/180, -5*pi/180]
     hs = [] #10000, 10500, 11500, 12000]
     for i in range(len(varthetas)):
         print('='*30)

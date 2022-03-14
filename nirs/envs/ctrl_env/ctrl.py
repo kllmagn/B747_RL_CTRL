@@ -18,7 +18,7 @@ class Controller:
         manual_ctrl:bool=True, # использовать ручное управление (СУ)
         manual_stab:bool=True, # использовать ручное управление (СС)
         use_storage=False,
-        delta_max=17*pi/180, # 10*pi/180
+        delta_max=17*pi/180,
         vartheta_max=10*pi/180,
         sample_time:float=None,
         use_limiter=False,
@@ -43,7 +43,9 @@ class Controller:
         self.w_deltaz = 0
         self.delta_max = delta_max # максимальное значение по углу отклонения рулей
         self.vartheta_max = vartheta_max # максимальное значение угла тангажа
+        self.deltaz_diff_int = Integrator()
         self.vth_err = Integrator()
+        self.vth_err_abs = Integrator()
         self.deriv_dict = DerivativeDict()
         self.memory_dict = MemoryDict()
         self.deltaz_backup = 0
@@ -54,7 +56,7 @@ class Controller:
         # 0.01 Гц, 0.5 Гц | -10*pi/180<=A<=10*pi/180 | sin
         h0 = random.uniform(1000, 11000)
         if self.random_init:
-            Vx = 227 #random.uniform(200, 227)
+            Vx = random.uniform(250, 265) #259.1667
             self.model.set_initial([0, h0, 0, Vx, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         if self.random_reset:
             h_zh = h0+random.uniform(-1000, 1000)
@@ -67,20 +69,23 @@ class Controller:
             #self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
             #print('Устанавливаю vartheta_zh =', vartheta_zh*180/pi)
         self.model.initialize()
+        self.memory_dict.input('dvedt', 0)
         self.storage.clear_all()
+        self.deltaz_diff_int.reset()
         self.vth_err.reset()
+        self.vth_err_abs.reset()
         
         #self.model.step()
         #self.post_step()
         #self.model.initialize()
 
     def post_step(self, state=None):
-        self.vth_err.input(abs(self.err_vartheta))
-        self.deriv_dict.input('dvedt', self.err_vartheta*180/pi, self.model.dt)
+        self.vth_err.input(self.err_vartheta)
+        self.vth_err_abs.input(abs(self.err_vartheta))
         if self.use_storage:
             # используется режим записи состояния модели
             self.storage.record("t", self.model.time)
-            self.storage.record('deltaz', (self.model.deltaz if self.manual_stab else self.model.deltaz_ref)*180/pi)
+            self.storage.record('deltaz', self.model.deltaz_com*180/pi)
             self.storage.record('deltaz_ref', self.model.deltaz_ref*180/pi)
             self.storage.record('deltaz_real', self.model.deltaz_real*180/pi)
             self.storage.record('hzh', self.model.hzh)
@@ -115,6 +120,7 @@ class Controller:
         else:
             #self.w_deltaz = action[-1]
             #self.model.deltaz = np.clip([self.model.deltaz+self.w_deltaz*self.sample_time], [-17*pi/180], [17*pi/180])[0]
+            self.deltaz_diff_int.input(abs(action[-1]))
             self.model.deltaz = action[-1]
         # ===========================================================
         self.state_backup = self.model.state
@@ -129,7 +135,7 @@ class Controller:
 
     @property
     def deltaz(self):
-        return self.model.deltaz if not self.model.use_PID_SS else self.model.deltaz_ref
+        return self.model.deltaz_com #deltaz if not self.model.use_PID_SS else self.model.deltaz_ref
 
     @property
     def vartheta_ref(self):

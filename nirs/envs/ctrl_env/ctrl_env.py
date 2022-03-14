@@ -2,6 +2,7 @@ import numpy as np
 import gym
 from math import exp, pi, log
 from gym import spaces
+from pandas import array
 
 from .tools import calc_err
 from .ctrl import Controller
@@ -21,14 +22,16 @@ class ControllerEnv(gym.Env):
 		self.is_testing = is_testing
 		acts_low, acts_high = self._get_action_def()
 		self.action_space = spaces.Box(low=np.array(acts_low), high=np.array(acts_high), shape=(len(acts_low),)) 
-		_, _, norms, n = self._get_obs_def()
+		_, _, norms, shape = self._get_obs_def()
 		self.observation_space = spaces.Box(
 			low=np.array([norm[0] for norm in norms]),
 			high=np.array([norm[1] for norm in norms]),
-			shape=(n,)
+			shape=shape
 		)
 		self.state_box = np.zeros(self.observation_space.shape)
 		self.reward_config = reward_config
+
+		self.action_prev = None
 
 	def _get_action_def(self):
 		acts_low, acts_high = [], []
@@ -54,17 +57,23 @@ class ControllerEnv(gym.Env):
 		add = []
 		norms = []
 
-		ks.extend(['alpha', 'vartheta', 'wz'])
-		norms.extend([(-pi, pi), (-pi, pi), (-pi, pi)])
-		add.extend([self.ctrl.err_vartheta, self.ctrl.vartheta_ref]) #, self.ctrl.model.deltaz_real, self.ctrl.model.deltaz])
-		norms.extend([(-pi, pi), (-pi, pi)]) #, (-pi, pi), (-pi, pi)])
+		#ks.extend(['alpha', 'vartheta', 'wz'])
+		#norms.extend([(-pi, pi), (-pi, pi), (-pi, pi)])
+		add.extend([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt])
+		norms.extend([(-np.inf, np.inf), (-pi, pi), (-pi, pi)])
+		#add.extend([self.ctrl.err_vartheta, self.ctrl.vartheta_ref])
+		#norms.extend([(-pi, pi), (-pi, pi)])
+		#add.extend([self.ctrl.model.deltaz])
+		#add.extend([self.ctrl.model.deltaz_real])
+		#norms.extend([(-self.ctrl.delta_max, self.ctrl.delta_max)])
+		#norms.extend([(-self.ctrl.delta_max, self.ctrl.delta_max)])
 
 		#ks.extend(['y'])
-		#norms.extend([(0, 80000)])
+		#norms.extend([(0, 12000)])
 		#add.extend([self.ctrl.model.hzh, self.ctrl.err_h])
-		#norms.extend([(0, 80000), (-80000, 80000)])
+		#norms.extend([(0, 12000), (-12000, 12000)])
 
-		return ks, add, norms, len(ks)+len(add)
+		return ks, add, norms, (len(ks)+len(add),)
 
 	def _get_obs(self):
 		# self.ctrl.model.state,\
@@ -80,33 +89,25 @@ class ControllerEnv(gym.Env):
 	def is_done(self):
 		return self.ctrl.is_nan_err or self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
 
-	def get_reward(self, action):
+	def get_reward(self, action, action_prev):
 		mode = self.reward_config.get('mode', 'standard')
+		if action_prev is None:
+			action_prev = action 
+		if type(action) in [np.ndarray, list, np.array]:
+			action, action_prev = action[0], action_prev[0]
 		if mode == 'standard':
 			if self.ctrl.no_correct or self.ctrl.manual_stab:
-				rmin = 0.07
-				v_max, vint_max, w_max, deltaz_max = 20*pi/180, 1000, 0.2, 50*pi/180
-				calc_k = lambda max_val: -log(rmin)/max_val # e^(-k*max_val) = rmin => -k*max_val = log(rmin) => k = -log(rmin)/max_val
-				Av = self.reward_config.get('Av', 1)
-				Avint = self.reward_config.get('Avint', 0)
-				Aw = self.reward_config.get('Aw', 0)
-				Adeltaz = self.reward_config.get('Adeltaz', 0)
-				kv = self.reward_config.get('kv', calc_k(v_max)) #1/(20*pi/180)) #180/pi)
-				kvint = self.reward_config.get('kvint', calc_k(vint_max))
-				kw = self.reward_config.get('kw', calc_k(w_max)) #0) #0.1/0.1)
-				kdeltaz = self.reward_config.get('kdeltaz', calc_k(deltaz_max)) #0) #1/(34*pi/180))
-				dvartheta = self.reward_config.get('dvartheta', 20*pi/180)
-				use_limit_punisher = True
-				#rv = Av/(1+kv*abs(self.ctrl.err_vartheta))
-				#rvint = Avint/(1+10*self.ctrl.vth_err.output()) #kv*abs(self.ctrl.err_vartheta))
-				#rdeltaz = Adeltaz/(1+kdeltaz*(abs(self.ctrl.err_vartheta)/dvartheta)*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref))
-				#rw = Aw/(1+kw*abs(self.ctrl.model.state_dict['wz'])*k1*abs(self.ctrl.err_vartheta)/dvartheta)
-				#rl = -2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0
-				rv = Av*exp(-kv*abs(self.ctrl.err_vartheta))
-				rw = Aw*exp(-kw*abs(self.ctrl.model.state_dict['wz']))
-				rvint = Avint*exp(kvint*abs(self.ctrl.vth_err.output()))
-				rdeltaz = Adeltaz*exp(-kdeltaz*abs(self.ctrl.deltaz-self.ctrl.model.deltaz_ref)) #rv+rw+rvint+rdeltaz+rl
-				r = rv+rw+rvint+rdeltaz
+				k1, k2, k3 = self.reward_config.get('k1', 2), self.reward_config.get('k2', 1), self.reward_config.get('k3', 1)
+				s = k1 + k2 + k3
+				k1 /= s
+				k2 /= s
+				k3 /= s
+				#if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
+				A = 0.5
+				#else:
+				#	A = 0.6
+				r = A-k1*abs(self.ctrl.model.dvartheta)-k2*abs(self.ctrl.model.dvartheta_dt)-k3*abs(self.ctrl.model.dvartheta_dt_dt) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
+				#print(abs(self.ctrl.model.dvartheta), abs(self.ctrl.model.dvartheta_dt), abs(self.ctrl.model.dvartheta_dt_dt))
 			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
 				Ay = self.reward_config.get('Ay', 1)
 				rmin, emax = 1e-3, 12000
@@ -129,10 +130,10 @@ class ControllerEnv(gym.Env):
 			return 0.5/(self.ctrl.calc_CS_err()+1) + 0.5/(self.ctrl.calc_SS_err()+1)
 
 	def step(self, action):
-		self.ctrl.memory_dict.input('dvedt', self.ctrl.deriv_dict.output('dvedt'))
 		self.ctrl.step(action)
 		observation = self._get_obs()
-		reward = self.get_reward(action)
+		reward = self.get_reward(action, self.action_prev)
+		self.action_prev = action
 		done = self.is_done()
 		info = {} #'storage': self.ctrl.storage}
 		return observation, reward, done, info
