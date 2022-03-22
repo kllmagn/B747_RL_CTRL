@@ -102,10 +102,9 @@ class ControllerEnv(gym.Env):
 				k1 /= s
 				k2 /= s
 				k3 /= s
-				#if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
 				A = 0.5
-				#else:
-				#	A = 0.6
+				if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
+					A -= abs(self.ctrl.model.dvartheta)
 				r = A-k1*abs(self.ctrl.model.dvartheta)-k2*abs(self.ctrl.model.dvartheta_dt)-k3*abs(self.ctrl.model.dvartheta_dt_dt) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
 				#print(abs(self.ctrl.model.dvartheta), abs(self.ctrl.model.dvartheta_dt), abs(self.ctrl.model.dvartheta_dt_dt))
 			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:

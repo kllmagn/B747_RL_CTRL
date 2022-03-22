@@ -233,11 +233,12 @@ class ControllerAgent:
                     hp = self.hp
             else:
                 hp = self.hp
-            reward_config = {
+            reward_config = {}
+            '''
                 'k1': trial.suggest_float('k1', 0.1, 1),
                 'k2': trial.suggest_float('k2', 0.1, 1),
                 'k3': trial.suggest_float('k3', 0.1, 1)
-            }
+                '''
             env = ControllerEnv(*ctrl_env_args, reward_config=reward_config, use_storage=True, **ctrl_env_kwargs)
             env = self._wrap_env(env, os.path.join(self.log_dir, 'optimization'))
             self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp)
@@ -249,14 +250,14 @@ class ControllerAgent:
                 es_startup = 0
             total_timesteps = training_timesteps
             savebest_dir = os.path.join(self.log_dir, 'optimization')
-            #cb2 = SaveOnBestTrainingRewardCallback(10000, savebest_dir, 1)
-            cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].model.TAE, 'TAE', 10000, log_dir=savebest_dir, maximize=opt_max) #vth_err_abs.output()
-            cb = EarlyStopping(lambda: cb2.mean_metric, 'mean_metric', 10000, 2, verbose=1, startup_step=es_startup, maximize=opt_max)
+            cb2 = SaveOnBestTrainingRewardCallback(10000, savebest_dir, 1)
+            #cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].model.TAE, 'TAE', 10000, log_dir=savebest_dir, maximize=opt_max) #vth_err_abs.output()
+            cb = EarlyStopping(lambda: cb2.mean_reward, 'mean_reward', 10000, 2, verbose=1, startup_step=es_startup, maximize=opt_max)
             with ProgressBarManager(total_timesteps) as callback:
                 cb_list = CallbackList([callback, cb2, cb]) #, cb, cb2])
                 self.model.learn(total_timesteps=total_timesteps, callback=cb_list)
             self.model = self.net_class.load(os.path.join(savebest_dir, 'best_model.zip'))
-            return cb2.mean_metric
+            return cb2.best_mean_reward
 
         study = optuna.create_study(direction=("maximize" if opt_max else "minimize"))
         study.optimize(objective, n_trials=500, callbacks=[save_model_callback])
@@ -450,13 +451,13 @@ if __name__ == '__main__':
     # ============ Обучение =============
     train = False
     train_kwargs = dict(
-        timesteps = 10000000,
-        tk = 30, # секунд
+        timesteps = 85000,
+        tk = 60, # секунд
         preload = False,
         use_es = False,
         optimize = False,
-        opt_max = False, #True,
-        opt_hp = False,
+        opt_max = True,
+        opt_hp = True,
         verbose=int(use_tb),
         log_interval=log_interval
     )
