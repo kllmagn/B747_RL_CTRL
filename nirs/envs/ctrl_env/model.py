@@ -177,6 +177,8 @@ class Model:
         self.use_PID_CS = use_PID_CS
         self.use_PID_SS = use_PID_SS
 
+        self.Pmax = self.P
+        
         self.initialize()
 
         self.labels = ['x', 'y', 'z', 'Vx', 'Vy', 'Vz', 'ax', 'ay', 'az', 'gamma', 'psi', 'vartheta', 'alpha', 'wx', 'wy', 'wz']

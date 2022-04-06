@@ -62,9 +62,9 @@ class Controller:
             h_zh = h0+random.uniform(-1000, 1000)
             A = random.uniform(-10*pi/180, 10*pi/180)
             dv = random.uniform(-10*pi/180, 10*pi/180)
-            self.h_func = lambda t: h_zh
+            self.h_func = lambda _: h_zh
             w1, w2 = 0.01, 0.5
-            self.vartheta_func = lambda t: A #np.clip([(A*sin(t))*sin((w*sin(t))*t) + dv], [-10*pi/180], [10*pi/180])[0]
+            self.vartheta_func = lambda _: A #np.clip([(A*sin(t))*sin((w*sin(t))*t) + dv], [-10*pi/180], [10*pi/180])[0]
             #self.use_ctrl = random.choice([True, False])
             #self.model = Model(use_PID_CS=self.use_ctrl and not self.manual_ctrl, use_PID_SS=not self.manual_stab)
             #print('Устанавливаю vartheta_zh =', vartheta_zh*180/pi)
@@ -74,6 +74,7 @@ class Controller:
         self.deltaz_diff_int.reset()
         self.vth_err.reset()
         self.vth_err_abs.reset()
+        self.model.P = self.model.Pmax * random.uniform(0.01, 1)
         
         #self.model.step()
         #self.post_step()

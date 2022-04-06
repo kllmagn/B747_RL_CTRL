@@ -100,11 +100,11 @@ hyperparams = {
     },
     A2C: {
         #'use_sde': True,
-        #'use_rms_prop': True,
+        'use_rms_prop': True,
         'learning_rate': 0.00013219127332957597,
         'ent_coef': 0.0026650043954570186,
         'vf_coef': 0.10796014008883446,
-        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[512, 512]) #, optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-5))
+        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[337, 380]) #, optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-5))
         },
     'A2C_old': {
         'gamma': 0.95,
@@ -143,41 +143,53 @@ hyperparams = {
     }
 }
 
-# Trial 25 finished with value: -61.18436341101212 and parameters: {'use_rms_prop': False, 'learning_rate': 0.00030937810859534454, 'n_depth': 3, 'n1': 329, 'n2': 316, 'n3': 370}. 
 
 class ControllerAgent:
+
     def __init__(self, net_class=A2C, use_tb=False, log_dir='./logs'):
-        th.manual_seed(1)
+        th.manual_seed(1) # выставляем seed для детерминированного поведения
         self.log_dir = log_dir # папка с логами
-        self.tb_log = os.path.join(self.log_dir, 'tb_log') if use_tb else None
-        if use_tb:
+        self.tb_log = os.path.join(self.log_dir, 'tb_log') if use_tb else None # ссылка на папку с логами обучения
+        if use_tb: # если используем TensorBoard, то запускаем его
             self.tb = program.TensorBoard()
             self.tb.configure(argv=[None, '--logdir', self.tb_log])
             self.tb_url = self.tb.launch()
             print(f"TensorBoard listening on {self.tb_url}")
-        else:
+        else: # если не используем, то выставляем в None
             self.tb, self.tb_url = None, None
-        self.net_class = net_class
-        if self.net_class in hyperparams:
+        self.net_class = net_class # сохраняем используемый класс нейросети
+        if self.net_class in hyperparams: # если класс присутствует в базе гиперпараметров, то получаем соответствующие гиперпараметры
             print('Using existing model configuration.')
             self.hp = hyperparams[self.net_class]
-        else:
+        else: # если класса нет, то используются гиперпараметры по умолчанию
             self.hp = {}
-        self.model = None
-        self.bm_name = 'best_model.zip'
+        self.model = None # выставляем объект модели нейросети как пустой
+        self.bm_name = 'best_model.zip' # выставляем имя файла модели
+
 
     def _wrap_env(self, env, monitor_dir=None, manual_reset=False, use_monitor=True):
+        '''
+        Функция для обертки среды соответствующими классами.
+        '''
         if use_monitor:
             env = Monitor(env, os.path.join((monitor_dir if monitor_dir else self.log_dir), 'monitor.csv'))
         env = DummyVecEnv([lambda: env], manual_reset=manual_reset)
         #env = VecNormalize(env, gamma=0.95, norm_obs = False, norm_reward=True)
-        #env.seed(1)
+        env.seed(1)
         return env
 
+
     def _unwrap_env(self, env):
+        '''
+        Функция обратной обертки среды.
+        '''
         return env.envs[0].env
 
+
     def optimize(self, training_timesteps, *ctrl_env_args, pretrain=False, opt_max=True, opt_hp=True, **ctrl_env_kwargs):
+        '''
+        Оптимизировать нейросетевую модель.
+        '''
         def save_model_callback(study:optuna.Study, trial):
             if (opt_max and study.best_value <= trial.value) or (not opt_max and study.best_value >= trial.value):
                 load_path = os.path.join(self.log_dir, 'best_model.zip')
@@ -262,7 +274,6 @@ class ControllerAgent:
         study = optuna.create_study(direction=("maximize" if opt_max else "minimize"))
         study.optimize(objective, n_trials=500, callbacks=[save_model_callback])
         params = study.best_params
-        #params = optimize.minimize(objective_core, [1/(20*pi/180), 5/0.1, 1/(34*pi/180)])
         print('Лучшие параметры:', params)
         params['policy_kwargs'] = dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[params[f'n{i+1}'] for i in range(params['n_depth'])])
         for i in range(params['n_depth']):
@@ -270,6 +281,7 @@ class ControllerAgent:
         del params['n_depth']
         self.hp = params
         print('Параметры нейросети:', self.hp)
+
 
     def pretrain(self, *ctrl_env_args, timesteps:int=50000, preload=False, num_int_episodes:int=100, algo:str='BC', **ctrl_env_kwargs):
         self.env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
@@ -285,7 +297,11 @@ class ControllerAgent:
         self.model = pretrain_agent_imit(self.model, env_expert, timesteps=timesteps, num_episodes=num_int_episodes, algo=algo)
         self.model.save(os.path.join(self.log_dir, self.bm_name))
 
+
     def train(self, *ctrl_env_args, timesteps=50000, preload=False, use_es=True, optimize=False, opt_max=True, opt_hp=True, verbose:int=1, log_interval:int=1000, **ctrl_env_kwargs):
+        '''
+        Произвести обучение нейросетевой модели.
+        '''
         self.env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
         env = self._wrap_env(self.env)
         if optimize:
@@ -311,7 +327,11 @@ class ControllerAgent:
         cb = CallbackList(cbs)
         self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval)
 
+
     def convert_to_onnx(self, filename:str):
+        '''
+        Произвести конвертацию модели в обобщенный формат .onnx.
+        '''
         self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name))
         if type(self.model) not in [PPO, A2C]:
             raise NotImplementedError
@@ -332,7 +352,11 @@ class ControllerAgent:
         dummy_input = th.randn(1, 3)
         th.onnx.export(onnxable_model, dummy_input, filename, opset_version=11, verbose=True)
 
+
     def test_onnx(self, filename:str):
+        '''
+        Протестировать существующий файл модели формата .onnx.
+        '''
         import onnx
         import onnxruntime as ort
         import numpy as np
@@ -343,6 +367,7 @@ class ControllerAgent:
         action, value = ort_sess.run(None, {'input.1': observation})
         action = np.clip(action, -17*pi/180, 17*pi/180)
         print('action:', action, 'value:', value)
+
 
     def test_env(self, num_interactions:int, env, no_action=False, use_render=False, on_episode_end=None):
         if not no_action:
@@ -370,6 +395,7 @@ class ControllerAgent:
             if use_render:
                 env.render()
         return np.mean(rews), np.std(rews), storage
+
 
     def test(self, *ctrl_env_args, ht_func=None, varthetat_func=None, **ctrl_env_kwargs):
         ctrl_env_kwargs['random_reset'] = False
@@ -413,7 +439,11 @@ class ControllerAgent:
 
         return storage2
 
+
     def show(self):
+        '''
+        Показать структуру модели.
+        '''
         if self.model is not None:
             attrs = ['gamma', 'max_grad_norm', 'gae_lambda', 'n_steps', 'learning_rate', 'ent_coef', 'vf_coef']
             print(self.model.policy.optimizer_class)
@@ -449,10 +479,10 @@ if __name__ == '__main__':
         algo = 'GAIL' # BC, GAIL, AIRL
     )
     # ============ Обучение =============
-    train = False
+    train = True
     train_kwargs = dict(
-        timesteps = 85000,
-        tk = 60, # секунд
+        timesteps = 500000,
+        tk = 10, # секунд
         preload = False,
         use_es = False,
         optimize = False,
@@ -475,7 +505,7 @@ if __name__ == '__main__':
         ctrl.train(**train_kwargs, **env_kwargs)
     #ctrl.test(**test_kwargs, **env_kwargs)
     # ==================================
-    varthetas = [5*pi/180, 10*pi/180, -10*pi/180, -5*pi/180]
+    varthetas = [5*pi/180] #, 10*pi/180, -10*pi/180, -5*pi/180]
     hs = [] #10000, 10500, 11500, 12000]
     for i in range(len(varthetas)):
         print('='*30)

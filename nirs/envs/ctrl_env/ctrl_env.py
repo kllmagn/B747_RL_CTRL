@@ -97,14 +97,15 @@ class ControllerEnv(gym.Env):
 			action, action_prev = action[0], action_prev[0]
 		if mode == 'standard':
 			if self.ctrl.no_correct or self.ctrl.manual_stab:
-				k1, k2, k3 = self.reward_config.get('k1', 2), self.reward_config.get('k2', 1), self.reward_config.get('k3', 1)
+				A = 0.5
+				if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
+					k1, k2, k3 = self.reward_config.get('k1', 1), self.reward_config.get('k2', 0), self.reward_config.get('k3', 0)
+				else:
+					k1, k2, k3 = self.reward_config.get('k1', 0.2), self.reward_config.get('k2', 1), self.reward_config.get('k3', 1)
 				s = k1 + k2 + k3
 				k1 /= s
 				k2 /= s
 				k3 /= s
-				A = 0.5
-				if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
-					A -= abs(self.ctrl.model.dvartheta)
 				r = A-k1*abs(self.ctrl.model.dvartheta)-k2*abs(self.ctrl.model.dvartheta_dt)-k3*abs(self.ctrl.model.dvartheta_dt_dt) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
 				#print(abs(self.ctrl.model.dvartheta), abs(self.ctrl.model.dvartheta_dt), abs(self.ctrl.model.dvartheta_dt_dt))
 			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
