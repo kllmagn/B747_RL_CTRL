@@ -30,6 +30,9 @@ import torch as th
 import optuna
 from scipy import optimize
 
+import onnx
+import onnxruntime as ort
+
 def linear_schedule(initial_value: float) -> Callable[[float], float]:
     def func(progress_remaining: float) -> float:
         return progress_remaining * initial_value
@@ -357,9 +360,6 @@ class ControllerAgent:
         '''
         Протестировать существующий файл модели формата .onnx.
         '''
-        import onnx
-        import onnxruntime as ort
-        import numpy as np
         onnx_model = onnx.load(filename)
         onnx.checker.check_model(onnx_model)
         observation = np.zeros((1, 3)).astype(np.float32)
