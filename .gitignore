@@ -2,3 +2,6 @@ __pycache__
 .venv
 .vscode
 logs
+.old_logs
+output
+nirs/envs/ctrl_env/tmp_models
