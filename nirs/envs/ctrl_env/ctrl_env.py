@@ -1,11 +1,11 @@
 import numpy as np
 import gym
-from math import exp, pi, log
+from math import atan, exp, pi, log, tan
 from gym import spaces
 from pandas import array
 
 from .tools import calc_err
-from .ctrl import Controller
+from .ctrl import Controller, CtrlMode
 
 class ControllerEnv(gym.Env):
 	"""Среда взаимодействия между контроллером и нейросетевой моделью."""
@@ -32,6 +32,7 @@ class ControllerEnv(gym.Env):
 		self.reward_config = reward_config
 
 		self.action_prev = None
+		self.deltaz_ref_back = self.ctrl.model.deltaz_ref
 
 	def _get_action_def(self):
 		acts_low, acts_high = [], []
@@ -48,8 +49,8 @@ class ControllerEnv(gym.Env):
 				acts_low.extend([0.9]*4)
 				acts_high.extend([1.1]*4)
 		else:
-			acts_low.extend([-self.ctrl.delta_max])
-			acts_high.extend([self.ctrl.delta_max])
+			acts_low.extend([-self.ctrl.action_max])
+			acts_high.extend([self.ctrl.action_max])
 		return acts_low, acts_high
 
 	def _get_obs_def(self):
@@ -65,8 +66,8 @@ class ControllerEnv(gym.Env):
 		#norms.extend([(-pi, pi), (-pi, pi)])
 		#add.extend([self.ctrl.model.deltaz])
 		#add.extend([self.ctrl.model.deltaz_real])
-		#norms.extend([(-self.ctrl.delta_max, self.ctrl.delta_max)])
-		#norms.extend([(-self.ctrl.delta_max, self.ctrl.delta_max)])
+		#norms.extend([(-self.ctrl.action_max, self.ctrl.action_max)])
+		#norms.extend([(-self.ctrl.action_max, self.ctrl.action_max)])
 
 		#ks.extend(['y'])
 		#norms.extend([(0, 12000)])
@@ -89,7 +90,7 @@ class ControllerEnv(gym.Env):
 	def is_done(self):
 		return self.ctrl.is_nan_err or self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
 
-	def get_reward(self, action, action_prev):
+	def get_reward(self, action, action_prev, deltaz_ref_back):
 		mode = self.reward_config.get('mode', 'standard')
 		if action_prev is None:
 			action_prev = action 
@@ -97,16 +98,38 @@ class ControllerEnv(gym.Env):
 			action, action_prev = action[0], action_prev[0]
 		if mode == 'standard':
 			if self.ctrl.no_correct or self.ctrl.manual_stab:
-				A = 0.5
-				if self.ctrl.model.state_dict['vartheta']*self.ctrl.model.dvartheta < 0:
-					k1, k2, k3 = self.reward_config.get('k1', 1), self.reward_config.get('k2', 0), self.reward_config.get('k3', 0)
-				else:
-					k1, k2, k3 = self.reward_config.get('k1', 0.2), self.reward_config.get('k2', 1), self.reward_config.get('k3', 1)
+				A = 1.0
+				k1, k2, k3 = self.reward_config.get('k1', 2), self.reward_config.get('k2', 2), self.reward_config.get('k3', 1)
+				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
+					# перерегулирование с противоположной стороны
+					self.dv_max = max(self.dv_max, self.ctrl.model.dvartheta) if self.ctrl.model.dvartheta > 0 else min(self.dv_max, self.ctrl.model.dvartheta)
+					#k1, k2, k3 = 1, 0, 0
+					#print(self.dv_max/self.ctrl.vartheta_ref*100)
 				s = k1 + k2 + k3
 				k1 /= s
 				k2 /= s
 				k3 /= s
-				r = A-k1*abs(self.ctrl.model.dvartheta)-k2*abs(self.ctrl.model.dvartheta_dt)-k3*abs(self.ctrl.model.dvartheta_dt_dt) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
+				k2_0 = 1/(1+5*abs(self.ctrl.model.dvartheta)/abs(2*self.ctrl.vartheta_ref))
+				#r = A-10*pi/180*(k1*abs(self.ctrl.model.dvartheta/self.ctrl.vartheta_ref)+k2*abs(self.ctrl.model.dvartheta_dt/self.ctrl.vartheta_ref)+k3*abs(self.ctrl.model.dvartheta_dt_dt/self.ctrl.vartheta_ref)) #-abs(self.dv_max)) #+1/(1+0.01*abs(self.dv_max)/abs(self.ctrl.vartheta_ref)) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
+				dw = 1/100*2*self.ctrl.vartheta_max/self.ctrl.model.dvartheta*self.ctrl.model.dvartheta_dt
+				#r = exp(-abs(self.ctrl.model.dvartheta/(self.ctrl.model.vartheta_ref))) #2*self.ctrl.vartheta_max-abs(self.ctrl.model.dvartheta)-abs(dw) #-0.1*abs(self.dv_max/self.ctrl.vartheta_ref)
+				r = exp(-(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(2*self.ctrl.vartheta_ref)) #-abs(self.dv_max)
+				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
+					r *= 0.2
+				k = abs(self.ctrl.model.dvartheta/(2*self.ctrl.vartheta_max))
+				rf = -k*(abs(action-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
+				r = r + rf
+				'''
+				if self.ctrl.model.time == self.ctrl.tk:
+					def transfer_quality():
+						info = self.ctrl.stepinfo_SS(use_backup=False)
+						time, overshoot = info['settling_time'], info['overshoot']
+						if time is None or overshoot is None:
+							return np.inf
+						else:
+							return time*abs(overshoot)
+					r -= transfer_quality()*0.1
+				'''
 				#print(abs(self.ctrl.model.dvartheta), abs(self.ctrl.model.dvartheta_dt), abs(self.ctrl.model.dvartheta_dt_dt))
 			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
 				Ay = self.reward_config.get('Ay', 1)
@@ -123,22 +146,31 @@ class ControllerEnv(gym.Env):
 			dedt_prev = self.ctrl.memory_dict.output('dvedt')
 			rv = -dedt if e > 0 else dedt
 			rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
-			#print(self.ctrl.vartheta_ref*180/pi, self.ctrl.model.state_dict['vartheta']*180/pi, self.ctrl.err_vartheta*180/pi)
 			return rt
+		elif mode == 'funclike':
+			tp = 3
+			y = self.ctrl.model.vartheta_ref
+			b = y/(pi/2)
+			a = tan(0.95*y/b)/tp
+			y_exp = b*atan(a*self.ctrl.model.time)
+			w_exp = b/(1+a**2*self.ctrl.model.time**2)
+			r = exp((-abs(self.ctrl.model.state_dict['vartheta']-y_exp)-abs(self.ctrl.model.state_dict['wz']-w_exp))/(20*pi/180))
+			return r
 		else:
-			#return 1/(1+180/pi*(self.ctrl.model.state_dict['vartheta']-self.ctrl.vartheta_ref)**2) + (-2 if (use_limit_punisher and self.ctrl.is_limit_err) else 0)
 			return 0.5/(self.ctrl.calc_CS_err()+1) + 0.5/(self.ctrl.calc_SS_err()+1)
 
 	def step(self, action):
 		self.ctrl.step(action)
 		observation = self._get_obs()
-		reward = self.get_reward(action, self.action_prev)
+		reward = self.get_reward(action, self.action_prev, self.deltaz_ref_back)
 		self.action_prev = action
+		self.deltaz_ref_back = self.ctrl.model.deltaz_ref
 		done = self.is_done()
 		info = {} #'storage': self.ctrl.storage}
 		return observation, reward, done, info
 
 	def reset(self):
+		self.dv_max = 0
 		self.ctrl.reset()
 		self.state_box = np.zeros(self.observation_space.shape)
 		observation = self._get_obs()

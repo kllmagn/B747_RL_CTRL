@@ -1,15 +1,18 @@
 import os
 import copy
 from math import pi
+import random
+from threading import Thread
+from matplotlib.pyplot import plot
 
 import numpy as np
 
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
+import stable_baselines3
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.sb2_compat.rmsprop_tf_like import RMSpropTFLike
 from callbacks import *
 from tensorboard import program
 
@@ -22,14 +25,14 @@ import optuna
 import onnx
 import onnxruntime as ort
 
-from nirs.envs.ctrl_env.ctrl_env import ControllerEnv
+from nirs.envs.ctrl_env.ctrl_env import *
 from pretrain import pretrain_agent_imit
-from setups import hyperparams
-
+from setups import hyperparams, trial_hyperparams, TrainPlotter
 
 class ControllerAgent:
 
-    def __init__(self, net_class=A2C, use_tb=False, log_dir='./logs'):
+    def __init__(self, net_class=A2C, use_tb=False, log_dir='./logs', model_name='best_model'):
+        random.seed(1)
         th.manual_seed(1) # выставляем seed для детерминированного поведения
         self.log_dir = log_dir # папка с логами
         self.tb_log = os.path.join(self.log_dir, 'tb_log') if use_tb else None # ссылка на папку с логами обучения
@@ -47,7 +50,17 @@ class ControllerAgent:
         else: # если класса нет, то используются гиперпараметры по умолчанию
             self.hp = {}
         self.model = None # выставляем объект модели нейросети как пустой
-        self.bm_name = 'best_model.zip' # выставляем имя файла модели
+        self.model_name = model_name
+        self.bm_name = f'{model_name}.zip' # выставляем имя файла модели
+
+        self.callbacks = [] # обязательные Callback функции
+
+    
+    def _init_callbacks(self, verbose:int=0):
+        '''
+        Инициализировать обязательные Callback функции.
+        '''
+        self.callbacks = []
 
 
     def _wrap_env(self, env, monitor_dir=None, manual_reset=False, use_monitor=True):
@@ -75,66 +88,20 @@ class ControllerAgent:
         '''
         def save_model_callback(study:optuna.Study, trial):
             if (opt_max and study.best_value <= trial.value) or (not opt_max and study.best_value >= trial.value):
-                load_path = os.path.join(self.log_dir, 'best_model.zip')
-                save_path = os.path.join(self.log_dir, 'optimization', 'best_model.zip')
+                load_path = os.path.join(self.log_dir, self.bm_name)
+                save_path = os.path.join(self.log_dir, 'optimization', self.bm_name)
                 os.replace(save_path, load_path)
         def objective(trial:optuna.Trial):
             if opt_hp:
-                if self.net_class is A2C:
-                    hp = {
-                    'gamma': trial.suggest_categorical("gamma", [0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 0.9999]),
-                    'max_grad_norm': trial.suggest_categorical("max_grad_norm", [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 2, 5]),
-                    'use_rms_prop': trial.suggest_categorical('use_rms_prop', [True, False]),
-                    'gae_lambda': trial.suggest_categorical("gae_lambda", [0.8, 0.9, 0.92, 0.95, 0.98, 0.99, 1.0]),
-                    'n_steps': trial.suggest_categorical("n_steps", [8, 16, 32, 64, 128, 256, 512, 1024, 2048]),
-                    'learning_rate': trial.suggest_loguniform("learning_rate", 1e-5, 1),
-                    'ent_coef': trial.suggest_loguniform("ent_coef", 0.00000001, 0.1),
-                    'vf_coef': trial.suggest_uniform("vf_coef", 0, 1),
-                    'policy_kwargs': dict(ortho_init=trial.suggest_categorical("ortho_init", [False, True]), activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 300, 400) for i in range(trial.suggest_int('n_depth', 2, 3))]) #dict(pi=[254,254], vf=[254,254])])
-                    }
-                elif self.net_class is TD3:
-                    hp = {
-                    'gamma': trial.suggest_float('gamma', 0.7, 0.99),
-                    'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3),
-                    'batch_size': trial.suggest_int('batch_size', 32, 256),
-                    'buffer_size': trial.suggest_int('buffer_size', 20000, 200000),
-                    'tau': trial.suggest_float('tau', 0.001, 0.1),
-                    'train_freq': trial.suggest_int('train_freq', 1, 64),
-                    'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 32, 400) for i in range(trial.suggest_int('n_depth', 2, 4))])
-                    }
-                elif self.net_class is PPO:
-                    hp = {
-                    'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 32, 400) for i in range(trial.suggest_int('n_depth', 2, 4))]),
-                    'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3),
-                    'gae_lambda': trial.suggest_float('gae_lambda', 0.6, 1.0),
-                    'n_steps': trial.suggest_int('n_steps', 1, 256),
-                    'ent_coef': trial.suggest_float('ent_coef', 0, 0.01),
-                    'vf_coef': trial.suggest_float('vf_coef', 0.05, 0.6),
-                    'batch_size': trial.suggest_int('batch_size', 32, 256),
-                    'gamma': trial.suggest_float('gamma', 0.7, 0.99),
-                    }
-                elif self.net_class is SAC:
-                    hp = {
-                    'use_sde': trial.suggest_categorical('use_rms_prop', [True, False]),
-                    'gamma': trial.suggest_float('gamma', 0.7, 0.99),
-                    'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3),
-                    'batch_size': trial.suggest_int('batch_size', 32, 256),
-                    'buffer_size': trial.suggest_int('buffer_size', 20000, 200000),
-                    'tau': trial.suggest_float('tau', 0.001, 0.1),
-                    'train_freq': trial.suggest_int('train_freq', 1, 64),
-                    'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[trial.suggest_int(f'n{i+1}', 32, 400) for i in range(trial.suggest_int('n_depth', 2, 4))])
-                    }
-                else:
-                    hp = self.hp
+                hp = trial_hyperparams(self.net_class, trial, self.hp)
             else:
                 hp = self.hp
-            reward_config = {}
-            '''
-                'k1': trial.suggest_float('k1', 0.1, 1),
-                'k2': trial.suggest_float('k2', 0.1, 1),
-                'k3': trial.suggest_float('k3', 0.1, 1)
-                '''
-            env = ControllerEnv(*ctrl_env_args, reward_config=reward_config, use_storage=True, **ctrl_env_kwargs)
+            reward_config = {
+                'k1': trial.suggest_categorical('k1', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
+                'k2': trial.suggest_categorical('k2', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
+                'k3': trial.suggest_categorical('k3', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
+            }
+            env = ControllerEnv(*ctrl_env_args, reward_config=reward_config, **ctrl_env_kwargs)
             env = self._wrap_env(env, os.path.join(self.log_dir, 'optimization'))
             self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp)
             if pretrain:
@@ -145,17 +112,26 @@ class ControllerAgent:
                 es_startup = 0
             total_timesteps = training_timesteps
             savebest_dir = os.path.join(self.log_dir, 'optimization')
-            cb2 = SaveOnBestTrainingRewardCallback(10000, savebest_dir, 1)
+            #sobtr = SaveOnBestTrainingRewardCallback(self.model_name, 10000, savebest_dir, 1)
             #cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].model.TAE, 'TAE', 10000, log_dir=savebest_dir, maximize=opt_max) #vth_err_abs.output()
-            cb = EarlyStopping(lambda: cb2.mean_reward, 'mean_reward', 10000, 2, verbose=1, startup_step=es_startup, maximize=opt_max)
+            tf_custom_recorder = CustomTransferProcessRecorder(
+                env_gen=lambda:self._wrap_env(ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs), use_monitor=False),
+                vartheta_ref=5*pi/180,
+                state0=[0, 11000, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                log_interval=5000,
+                filename=self.bm_name,
+                log_dir=savebest_dir,
+                window_length=5,
+                verbose=0)
+            es = EarlyStopping(lambda: tf_custom_recorder.mean_quality, 'mean_quality', 10000, 4, verbose=1, startup_step=es_startup, maximize=opt_max)
             with ProgressBarManager(total_timesteps) as callback:
-                cb_list = CallbackList([callback, cb2, cb]) #, cb, cb2])
+                cb_list = CallbackList([callback, tf_custom_recorder])
                 self.model.learn(total_timesteps=total_timesteps, callback=cb_list)
-            self.model = self.net_class.load(os.path.join(savebest_dir, 'best_model.zip'))
-            return cb2.best_mean_reward
+            self.model = self.net_class.load(os.path.join(savebest_dir, self.bm_name))
+            return tf_custom_recorder.best_mean_quality
 
         study = optuna.create_study(direction=("maximize" if opt_max else "minimize"))
-        study.optimize(objective, n_trials=500, callbacks=[save_model_callback])
+        study.optimize(objective, n_trials=500, callbacks=[save_model_callback], catch=(ValueError,))
         params = study.best_params
         print('Лучшие параметры:', params)
         params['policy_kwargs'] = dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[params[f'n{i+1}'] for i in range(params['n_depth'])])
@@ -181,7 +157,20 @@ class ControllerAgent:
         self.model.save(os.path.join(self.log_dir, self.bm_name))
 
 
-    def train(self, *ctrl_env_args, timesteps=50000, preload=False, use_es=True, optimize=False, opt_max=True, opt_hp=True, verbose:int=1, log_interval:int=1000, **ctrl_env_kwargs):
+    def train(
+            self,
+            *ctrl_env_args,
+            timesteps=50000,
+            preload=False,
+            use_es=True,
+            optimize=False,
+            opt_max=True,
+            opt_hp=True,
+            verbose:int=1,
+            log_interval:int=1000,
+            show_plotter:bool=False,
+            **ctrl_env_kwargs
+        ):
         '''
         Произвести обучение нейросетевой модели.
         '''
@@ -190,26 +179,64 @@ class ControllerAgent:
         if optimize:
             print('Оптимизирую с помощью Optuna')
             self.optimize(timesteps, opt_max=opt_max, opt_hp=opt_hp, *ctrl_env_args, **ctrl_env_kwargs)
-            self.model = self.net_class.load(os.path.join(self.log_dir, 'best_model.zip'), tensorboard_log=self.tb_log, verbose=verbose)
+            self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name), tensorboard_log=self.tb_log, verbose=verbose)
             self.model.set_env(env)
         else:
             if preload:
-                preload_path = os.path.join(self.log_dir, 'best_model.zip')
+                preload_path = os.path.join(self.log_dir, self.bm_name)
                 print('Предзагружаю модель из', preload_path)
                 self.model = self.net_class.load(preload_path, tensorboard_log=self.tb_log, verbose=verbose)
                 self.model.set_env(env)
             else:
                 print('Создаю новую модель:', str(self.net_class))
                 self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, verbose=verbose, **self.hp)
-        cb1 = SaveOnBestTrainingRewardCallback(10000, self.log_dir, 1)
-        cb_metric = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].deltaz_diff_int.output(), 'deltaz_diff_int', 10000, log_dir=self.log_dir, maximize=False)
+        cb1 = SaveOnBestTrainingRewardCallback(self.bm_name, 5000, self.log_dir, 1)
+        cb_metric = SaveOnBestQualityMetricCallback(self.bm_name, lambda env: env.get_attr('ctrl')[0].deltaz_diff_int.output(), 'deltaz_diff_int', 10000, log_dir=self.log_dir, maximize=False)
         cb2 = EarlyStopping(lambda: cb1.mean_reward, 'vth_err', 10000, 4, verbose=1, maximize=True)
-        cbs = [cb1]
+        def transfer_quality(env):
+            info = env.get_attr('ctrl')[0].stepinfo_SS(use_backup=True)
+            time, overshoot = info['settling_time'], info['overshoot']
+            print('Время ПП:', time, 'Перерегулирование:', overshoot)
+            if time is None or overshoot is None:
+                return np.inf
+            else:
+                return time*abs(overshoot)
+        transfer_callback = SaveOnBestQualityMetricCallback(
+            self.bm_name,
+            transfer_quality,
+            'tf_quality',
+            -1,
+            self.log_dir,
+            verbose=1,
+            maximize=False,
+            mean_num = 10
+        )
+
+        tf_custom_recorder = CustomTransferProcessRecorder(
+            env_gen=lambda:self._wrap_env(ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs), use_monitor=False),
+            vartheta_ref=5*pi/180,
+            state0=[0, 11000, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            log_interval=5000,
+            filename=self.bm_name,
+            log_dir=self.log_dir,
+            window_length=100,
+            verbose=1)
+
+        cbs = [tf_custom_recorder] #, cb1]
         if use_es:
             cbs.append(cb2)
         cb = CallbackList(cbs)
-        self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval)
 
+        tplotter = None
+        if show_plotter:
+            def tplotter_gen(env):
+                nonlocal tplotter
+                tplotter = TrainPlotter(env, ['vartheta', 'vartheta_ref'], 't')
+                if show_plotter:
+                    tplotter.show()
+            t = Thread(target=tplotter_gen, args=(env,))
+            t.start()
+        self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval, tb_log_name=self.model_name)
 
     def convert_to_onnx(self, filename:str):
         '''
@@ -277,7 +304,7 @@ class ControllerAgent:
         return np.mean(rews), np.std(rews), storage
 
 
-    def test(self, *ctrl_env_args, ht_func=None, varthetat_func=None, **ctrl_env_kwargs):
+    def test(self, *ctrl_env_args, ht_func=None, varthetat_func=None, plot=False, **ctrl_env_kwargs):
         ctrl_env_kwargs['random_reset'] = False
 
         self.env = ControllerEnv(*ctrl_env_args, h_func=ht_func, vartheta_func=varthetat_func, use_storage=True,\
@@ -286,38 +313,48 @@ class ControllerAgent:
         tk = ctrl_env_kwargs['tk']
         print('Расчет перехода с использованием нейросетевого регулятора [func]')
         env = self._wrap_env(self.env, manual_reset=True)
-        hf = vf = None
+        hf = vf = info = None
         def callb(env):
-            nonlocal vf, hf
+            nonlocal vf, hf, info
             vf = env.get_attr('ctrl')[0].vartheta_func
             hf = env.get_attr('ctrl')[0].h_func
             ctrl_obj = env.get_attr('ctrl')[0]
             if ctrl_obj.use_ctrl:
-                print(ctrl_obj.stepinfo_CS())
+                info = ctrl_obj.stepinfo_CS()
             else:
-                print(ctrl_obj.stepinfo_SS())
+                info = ctrl_obj.stepinfo_SS()
+            print(info)
             print('Суммарная ошибка по углу:', ctrl_obj.vth_err.output())
         num_interactions = int(tk/self.env.ctrl.sample_time)
         mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True, on_episode_end=callb)
+        info_neural = dict(info)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
 
         print('Расчет перехода с использованием ПИД-регулятора [func]')
-        env = ControllerEnv(h_func=hf, vartheta_func=vf, use_ctrl=ctrl_env_kwargs['use_ctrl'],\
-            no_correct=True, manual_ctrl=False, manual_stab=False, use_storage=True, is_testing=True, tk=tk, random_reset=ctrl_env_kwargs['random_reset'])
+        ctrl_env_kwargs['h_func'] = hf
+        ctrl_env_kwargs['vartheta_func'] = vf
+        ctrl_env_kwargs['no_correct'] = ctrl_env_kwargs['use_storage'] = ctrl_env_kwargs['is_testing'] = True
+        ctrl_env_kwargs['manual_ctrl'] = ctrl_env_kwargs['manual_stab'] = False
+        ctrl_env_kwargs['tk'] = tk
+        del ctrl_env_kwargs['sample_time']
+        env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
         env = self._wrap_env(env, manual_reset=True)
         mean_reward, std_reward, storage2 = self.test_env(\
             num_interactions*int(self.env.ctrl.sample_time/self.env.ctrl.model.dt),\
                 env, no_action=True, use_render=True, on_episode_end=callb)
+        info_pid = dict(info)
         print(f"Mean reward = {mean_reward} +/- {std_reward}")
 
         storage2.merge(storage1, 'neural')
-        storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
-        if env.envs[0].env.ctrl.use_ctrl:
-            storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
-        storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
-        storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
+        
+        if plot:
+            storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
+            if env.envs[0].env.ctrl.use_ctrl:
+                storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
+            storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
+            storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
 
-        return storage2
+        return storage2, info_neural, info_pid
 
 
     def show(self):
@@ -333,72 +370,3 @@ class ControllerAgent:
             print(self.model.policy)
         else:
             print('Невозможно отобразить структуру модели: модель отсутствует.')
-
-
-if __name__ == '__main__':
-    # добавить таймер для обучения
-    net_class = A2C
-    use_tb = True
-    log_interval = 1000
-    env_kwargs = dict(
-        use_ctrl = False, # использовать СУ (ПИД-регулятор авто или коррекция)
-        manual_ctrl = False, # вкл. ручное управление СУ (откл. поддержку ПИД-регулятора)
-        manual_stab = True, # вкл. ручное управление СС (откл. поддержку ПИД-регулятора)
-        no_correct = True, # не использовать коррекцию коэффициентов ПИД-регуляторов
-        sample_time = 0.05,
-        use_limiter = False,
-        random_init = True, # случайная инициализация начального состояния
-        #reward_config={'k1': 0.5626263389608758, 'k2': 0.957988620443826, 'k3': 0.20433884176957848} #{'kv': 23.02559907773439, 'kw': 123.40541803849644, 'kdeltaz': 6.523852550774975}
-    )
-    # ===== Имитационное обучение ======
-    pretrain = False 
-    pretrain_kwargs = dict(
-        timesteps = 1_000_000, # epochs (BC)
-        preload = False,
-        num_int_episodes = 200,
-        algo = 'GAIL' # BC, GAIL, AIRL
-    )
-    # ============ Обучение =============
-    train = True
-    train_kwargs = dict(
-        timesteps = 500000,
-        tk = 10, # секунд
-        preload = False,
-        use_es = False,
-        optimize = False,
-        opt_max = True,
-        opt_hp = True,
-        verbose=int(use_tb),
-        log_interval=log_interval
-    )
-    # ========== Тестирование ==========
-    test_kwargs = dict(
-        tk = 60, # секунд
-        ht_func = lambda t: 11500,
-        varthetat_func = lambda t: 10*pi/180 #if t < 25 else -10*pi/180
-    )
-    # ==================================
-    ctrl = ControllerAgent(net_class=net_class, use_tb=use_tb)
-    if pretrain:
-        ctrl.pretrain(**pretrain_kwargs, **env_kwargs)
-    if train:
-        ctrl.train(**train_kwargs, **env_kwargs)
-    #ctrl.test(**test_kwargs, **env_kwargs)
-    # ==================================
-    varthetas = [5*pi/180] #, 10*pi/180, -10*pi/180, -5*pi/180]
-    hs = [] #10000, 10500, 11500, 12000]
-    for i in range(len(varthetas)):
-        print('='*30)
-        print('Тестирую угол тангажа vartheta =', varthetas[i]*180/pi, '[град]')
-        env_kwargs['use_ctrl'] = False
-        storage = ctrl.test(tk=test_kwargs['tk'], ht_func = lambda t: 11000, varthetat_func = lambda t: varthetas[i], **env_kwargs)
-        storage.save(f'data_vartheta_{varthetas[i]*180/pi}.xlsx')
-    for i in range(len(hs)):
-        print('='*30)
-        print('Тестирую высоту h =', hs[i], '[м]')
-        env_kwargs['use_ctrl'] = True
-        storage = ctrl.test(tk=test_kwargs['tk'], ht_func = lambda t: hs[i], varthetat_func = lambda t: 10*pi/180, **env_kwargs)
-        storage.save(f'data_h_{hs[i]}.xlsx')
-    ctrl.show()
-    ctrl.convert_to_onnx('model.onnx')
-    ctrl.test_onnx('model.onnx')

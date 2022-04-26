@@ -120,7 +120,7 @@ class Model:
         self._deltaz = real_T.in_dll(self.dll, "deltaz") # угол отклонения рулей (ручное управление)
         self._vartheta_zh = real_T.in_dll(self.dll, "vartheta") # желаемый тангаж (ручное управление)
         self._P = real_T.in_dll(self.dll, 'P') # ручное значение тяги
-        self._aero_err = (real_T*4).in_dll(self.dll, 'aero_err') # вектор ошибок а/д коэффициентов (CXa, CYa, mz, mz_deltaz)
+        self._aero_err = (real_T*4).in_dll(self.dll, 'aero_err') # вектор ошибок а/д коэффициентов в диапазоне [-aero_err_max; aero_err_max] (CXa, CYa, mz, mz_deltaz)
 
         # Фильтры сигналов
         def remove_nan(val):
@@ -168,7 +168,7 @@ class Model:
         Model.deltaz = generate_param('_deltaz', float)
         Model.vartheta_zh = generate_param('_vartheta_zh', float)
         Model.P = generate_param('_P', float)
-        Model.aero_err = generate_param('_aero_err', float)
+        Model.aero_err = generate_param('_aero_err', np.ndarray)
 
         self._PID_initial = np.array(list(self._PID_CS)+list(self._PID_SS))
         # назначение конфигурации в соответствии с аргументами
@@ -183,9 +183,12 @@ class Model:
 
         self.labels = ['x', 'y', 'z', 'Vx', 'Vy', 'Vz', 'ax', 'ay', 'az', 'gamma', 'psi', 'vartheta', 'alpha', 'wx', 'wy', 'wz']
 
-    #def __del__(self):
-    #    del self.dll # на всякий
-    #    os.remove(self.dll_path)
+    def __del__(self):
+        if platform.system() == 'Windows':
+            handle = self.dll._handle
+            del self.dll # на всякий
+            ctypes.windll.kernel32.FreeLibrary(handle)
+            os.remove(self.dll_path)
 
     def initialize(self):
         """Initialize the Model."""

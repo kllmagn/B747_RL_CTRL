@@ -43,7 +43,7 @@ if __name__ == '__main__':
         algo = 'GAIL' # BC, GAIL, AIRL
     )
     # ============ Обучение =============
-    train = True
+    train = False
     train_kwargs = dict(
         timesteps = 800000,
         tk = 20, # секунд
