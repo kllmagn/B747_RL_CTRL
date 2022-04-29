@@ -1,11 +1,11 @@
 from asyncore import write
 from threading import Thread
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
-from ctrl_agent.ctrl_agent import *
+from neural.ctrl_agent import *
 
 from math import pi
 
-from ctrl_agent.setups import TrainPlotter
+from neural.setups import TrainPlotter
 
 ctrl_max_modes = {
     CtrlMode.DIRECT_CONTROL: 17*pi/180,

@@ -4,4 +4,4 @@ __pycache__
 logs
 .old_logs
 output
-nirs/envs/ctrl_env/tmp_models
+ctrl/tmp_models

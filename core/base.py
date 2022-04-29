@@ -1,6 +1,6 @@
 from cgitb import reset
 from multiprocessing.sharedctypes import Value
-from .model import Model
+from core.model import Model
 from tools.tools import *
 
 from math import pi, sin

@@ -1,6 +1,7 @@
 import logging
 from math import pi
-from .model import Model
+import core
+from core.model import Model
 from tools.tools import Storage
 
 class ControllerPID:
