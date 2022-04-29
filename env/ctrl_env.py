@@ -4,8 +4,8 @@ from math import atan, exp, pi, log, tan
 from gym import spaces
 from pandas import array
 
-from .tools import calc_err
-from .ctrl import Controller, CtrlMode
+from tools.tools import calc_err
+from ctrl.ctrl import Controller, CtrlMode
 
 class ControllerEnv(gym.Env):
 	"""Среда взаимодействия между контроллером и нейросетевой моделью."""

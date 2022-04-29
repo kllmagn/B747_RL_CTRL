@@ -13,7 +13,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMoni
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.evaluation import evaluate_policy
-from callbacks import *
+from .callbacks import *
 from tensorboard import program
 
 from tqdm import tqdm
@@ -25,9 +25,9 @@ import optuna
 import onnx
 import onnxruntime as ort
 
-from nirs.envs.ctrl_env.ctrl_env import *
-from pretrain import pretrain_agent_imit
-from setups import hyperparams, trial_hyperparams, TrainPlotter
+from env.ctrl_env import *
+from .pretrain import pretrain_agent_imit
+from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
 class ControllerAgent:
 

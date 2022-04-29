@@ -1,7 +1,7 @@
 from matplotlib.style import use
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
 from stable_baselines3.common.sb2_compat.rmsprop_tf_like import RMSpropTFLike
-from callbacks import *
+from .callbacks import *
 
 from typing import Callable
 
