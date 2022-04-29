@@ -204,7 +204,7 @@ def pretrain_agent_imit(
     algo='BC'
     ):
     #tempdir = tempfile.TemporaryDirectory(prefix="pretrain")
-    tempdir_path = './logs/tb_log/' #pathlib.Path(tempdir.name)
+    tempdir_path = './.logs/tb_log/' #pathlib.Path(tempdir.name)
     trajectories = rollout.generate_trajectories(lambda obs: [[env_expert.get_attr('ctrl')[i].model.deltaz_ref] for i in range(len(obs))], env_expert, rollout.make_sample_until(None, num_episodes))
     transitions = rollout.flatten_trajectories(trajectories)
     env = student.env

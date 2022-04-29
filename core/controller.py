@@ -1,7 +1,7 @@
 from cgitb import reset
 from multiprocessing.sharedctypes import Value
 from core.model import Model
-from tools.tools import *
+from tools.general import *
 
 from math import pi, sin
 import random

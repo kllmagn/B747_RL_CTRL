@@ -1,7 +1,7 @@
 from asyncore import write
 from threading import Thread
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
-from neural.ctrl_agent import *
+from neural.agent import *
 
 from math import pi
 
@@ -19,7 +19,7 @@ if __name__ == '__main__':
     ctrl_mode = CtrlMode.DIRECT_CONTROL
     use_tb = True
     model_name = 'DELETE_ME'
-    test_output_dir = 'output'
+    test_output_dir = '.output'
     log_interval = 1000
     plot_test = True
 

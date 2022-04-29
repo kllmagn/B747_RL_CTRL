@@ -31,7 +31,7 @@ from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
 class ControllerAgent:
 
-    def __init__(self, net_class=A2C, use_tb=False, log_dir='./logs', model_name='best_model'):
+    def __init__(self, net_class=A2C, use_tb=False, log_dir='./.logs', model_name='best_model'):
         random.seed(1)
         th.manual_seed(1) # выставляем seed для детерминированного поведения
         self.log_dir = log_dir # папка с логами

@@ -1,7 +1,7 @@
 __pycache__
 .venv
 .vscode
-logs
+.logs
 .old_logs
-output
+.output
 ctrl/tmp_models

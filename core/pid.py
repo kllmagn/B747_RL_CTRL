@@ -2,7 +2,7 @@ import logging
 from math import pi
 import core
 from core.model import Model
-from tools.tools import Storage
+from tools.general import Storage
 
 class ControllerPID:
     ''' Управляющий контроллер для управления средой только с помощью ПИД-регуляторов'''
