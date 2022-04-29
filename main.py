@@ -1,11 +1,11 @@
 from asyncore import write
 from threading import Thread
 from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
-from ctrl_agent import *
+from neural.agent import *
 
 from math import pi
 
-from setups import TrainPlotter
+from neural.setups import TrainPlotter
 
 ctrl_max_modes = {
     CtrlMode.DIRECT_CONTROL: 17*pi/180,
@@ -18,8 +18,8 @@ if __name__ == '__main__':
     net_class = A2C
     ctrl_mode = CtrlMode.DIRECT_CONTROL
     use_tb = True
-    model_name = 'NOSIM_DIRECT_CONTROL_AERR'
-    test_output_dir = 'output'
+    model_name = 'DELETE_ME'
+    test_output_dir = '.output'
     log_interval = 1000
     plot_test = True
 
@@ -43,7 +43,7 @@ if __name__ == '__main__':
         algo = 'GAIL' # BC, GAIL, AIRL
     )
     # ============ Обучение =============
-    train = False
+    train = True
     train_kwargs = dict(
         timesteps = 800000,
         tk = 20, # секунд

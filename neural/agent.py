@@ -13,7 +13,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMoni
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.evaluation import evaluate_policy
-from callbacks import *
+from .callbacks import *
 from tensorboard import program
 
 from tqdm import tqdm
@@ -25,13 +25,13 @@ import optuna
 import onnx
 import onnxruntime as ort
 
-from nirs.envs.ctrl_env.ctrl_env import *
-from pretrain import pretrain_agent_imit
-from setups import hyperparams, trial_hyperparams, TrainPlotter
+from env.ctrl_env import *
+from .pretrain import pretrain_agent_imit
+from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
 class ControllerAgent:
 
-    def __init__(self, net_class=A2C, use_tb=False, log_dir='./logs', model_name='best_model'):
+    def __init__(self, net_class=A2C, use_tb=False, log_dir='./.logs', model_name='best_model'):
         random.seed(1)
         th.manual_seed(1) # выставляем seed для детерминированного поведения
         self.log_dir = log_dir # папка с логами
