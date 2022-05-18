@@ -1,187 +1,186 @@
+import random
+from typing import Callable, Tuple
+from core.controller import Controller, CtrlMode
+
 import numpy as np
 import gym
-from math import atan, exp, pi, log, tan
+import torch as th
+from math import exp, pi
 from gym import spaces
-from pandas import array
+from enum import Enum
 
-from tools.general import calc_err
-from core.controller import Controller, CtrlMode
+
+class ObservationType(Enum):
+	PID_LIKE = 0 # метод подобия
+	SPEED_MODE = 1 # учет скоростного режима
+	PID_AERO = 2
+	PID_SPEED_AERO = 3
+	MODEL_STATE = 4
+
+class RewardType(Enum):
+	CLASSIC = 0
+	TAE = 1
+	TSE = 2
+	PID_LIKE = 3
 
 class ControllerEnv(gym.Env):
 	"""Среда взаимодействия между контроллером и нейросетевой моделью."""
 	metadata = {'render.modes': ['human']}
+
 	def __init__(
 		self,
-		*ctrl_args,
-		is_testing:bool=False,
-		reward_config:dict={},
+		observation_type:ObservationType,
+		reward_type:RewardType,
+		norm_obs:bool,
+		norm_act:bool,
+		*ctrl_args, # аргументы контроллера
 		**ctrl_kwargs
 		):
 		super(ControllerEnv, self).__init__()
-		self.ctrl = Controller(*ctrl_args, **ctrl_kwargs)
-		self.is_testing = is_testing
-		acts_low, acts_high = self._get_action_def()
-		self.action_space = spaces.Box(low=np.array(acts_low), high=np.array(acts_high), shape=(len(acts_low),)) 
-		_, _, norms, shape = self._get_obs_def()
-		self.observation_space = spaces.Box(
-			low=np.array([norm[0] for norm in norms]),
-			high=np.array([norm[1] for norm in norms]),
-			shape=shape
-		)
+
+		random.seed(1) # выставляем seed для детерминированного поведения
+		np.random.seed(0) # выставляем seed для детерминированного поведения
+		th.manual_seed(1) # выставляем seed для детерминированного поведения
+
+		self.observation_type = observation_type # тип используемого вектора состояния
+		self.reward_type = reward_type # тип используемой функции подкрепления
+		self.norm_obs = norm_obs
+		self.norm_act = norm_act
+
+		ControllerEnv.get_reward = self._get_reward_def(self.reward_type)
+		ControllerEnv._get_obs_raw = self._create_obs()
+		ControllerEnv._get_obs_def = self._create_obs_def()
+
+		self.ctrl = Controller(*ctrl_args, **ctrl_kwargs) # объект контроллера
+
+		acts_low, acts_high = self._get_action_def() # получить определение действия
+		assert acts_low.shape == acts_high.shape, 'Размерности граничных определений действия не совпадают.'
+		obs_low, obs_high = self._get_obs_def() # получить определение вектора состояния
+		assert obs_low.shape == obs_high.shape, 'Размерности граничных определений вектора состояния не совпадают.'
+
+		if self.norm_act:
+			self.action_space = spaces.Box(low=-1, high=1, shape=acts_low.shape)
+		else:
+			self.action_space = spaces.Box(low=acts_low, high=acts_high, shape=acts_low.shape)
+		if self.norm_obs:
+			self.observation_space = spaces.Box(low=-1, high=1, shape=obs_low.shape)
+		else:
+			self.observation_space = spaces.Box(low=obs_low, high=obs_high, shape=obs_low.shape)
 		self.state_box = np.zeros(self.observation_space.shape)
-		self.reward_config = reward_config
 
-		self.action_prev = None
-		self.deltaz_ref_back = self.ctrl.model.deltaz_ref
 
-	def _get_action_def(self):
-		acts_low, acts_high = [], []
-		if self.ctrl.use_ctrl:
-			if self.ctrl.model.use_PID_CS:
-				if not self.ctrl.no_correct:
-					acts_low.extend([0.9]*4)
-					acts_high.extend([1.1]*4)
-			else:
-				acts_low.extend([-self.ctrl.vartheta_max])
-				acts_high.extend([self.ctrl.vartheta_max])
-		if self.ctrl.model.use_PID_SS:
-			if not self.ctrl.no_correct:
-				acts_low.extend([0.9]*4)
-				acts_high.extend([1.1]*4)
-		else:
-			acts_low.extend([-self.ctrl.action_max])
-			acts_high.extend([self.ctrl.action_max])
-		return acts_low, acts_high
-
-	def _get_obs_def(self):
-		ks = []
-		add = []
-		norms = []
-
-		#ks.extend(['alpha', 'vartheta', 'wz'])
-		#norms.extend([(-pi, pi), (-pi, pi), (-pi, pi)])
-		add.extend([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt])
-		norms.extend([(-np.inf, np.inf), (-pi, pi), (-pi, pi)])
-		#add.extend([self.ctrl.err_vartheta, self.ctrl.vartheta_ref])
-		#norms.extend([(-pi, pi), (-pi, pi)])
-		#add.extend([self.ctrl.model.deltaz])
-		#add.extend([self.ctrl.model.deltaz_real])
-		#norms.extend([(-self.ctrl.action_max, self.ctrl.action_max)])
-		#norms.extend([(-self.ctrl.action_max, self.ctrl.action_max)])
-
-		#ks.extend(['y'])
-		#norms.extend([(0, 12000)])
-		#add.extend([self.ctrl.model.hzh, self.ctrl.err_h])
-		#norms.extend([(0, 12000), (-12000, 12000)])
-
-		return ks, add, norms, (len(ks)+len(add),)
-
-	def _get_obs(self):
-		# self.ctrl.model.state,\
-		ks, add, _, _ = self._get_obs_def()
-		new_state = np.concatenate((np.array([self.ctrl.model.state_dict[k] for k in ks]), np.array(add)))
-		if len(self.observation_space.shape) > 1:
-			self.state_box = np.vstack([self.state_box, new_state])
-			self.state_box = np.delete(self.state_box, 0, 0)
-		else:
-			self.state_box = new_state
-		return self.state_box
-
-	def is_done(self):
-		return self.ctrl.is_nan_err or self.ctrl.is_done or (not self.is_testing and self.ctrl.is_limit_err)
-
-	def get_reward(self, action, action_prev, deltaz_ref_back):
-		mode = self.reward_config.get('mode', 'standard')
-		if action_prev is None:
-			action_prev = action 
-		if type(action) in [np.ndarray, list, np.array]:
-			action, action_prev = action[0], action_prev[0]
-		if mode == 'standard':
-			if self.ctrl.no_correct or self.ctrl.manual_stab:
-				A = 1.0
-				k1, k2, k3 = self.reward_config.get('k1', 2), self.reward_config.get('k2', 2), self.reward_config.get('k3', 1)
+	def _get_reward_def(self, reward_type:RewardType) -> Callable[['ControllerEnv', np.ndarray], float]:
+		if reward_type == RewardType.CLASSIC:
+			def rew(self:ControllerEnv, action:np.ndarray) -> float:
+				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max
+				k1, k2, k3 = 2, 2, 1
 				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
 					# перерегулирование с противоположной стороны
 					self.dv_max = max(self.dv_max, self.ctrl.model.dvartheta) if self.ctrl.model.dvartheta > 0 else min(self.dv_max, self.ctrl.model.dvartheta)
-					#k1, k2, k3 = 1, 0, 0
-					#print(self.dv_max/self.ctrl.vartheta_ref*100)
 				s = k1 + k2 + k3
 				k1 /= s
 				k2 /= s
 				k3 /= s
-				k2_0 = 1/(1+5*abs(self.ctrl.model.dvartheta)/abs(2*self.ctrl.vartheta_ref))
-				#r = A-10*pi/180*(k1*abs(self.ctrl.model.dvartheta/self.ctrl.vartheta_ref)+k2*abs(self.ctrl.model.dvartheta_dt/self.ctrl.vartheta_ref)+k3*abs(self.ctrl.model.dvartheta_dt_dt/self.ctrl.vartheta_ref)) #-abs(self.dv_max)) #+1/(1+0.01*abs(self.dv_max)/abs(self.ctrl.vartheta_ref)) #-self.ctrl.model.TAE #+0.6/(1+abs(action)) #
-				dw = 1/100*2*self.ctrl.vartheta_max/self.ctrl.model.dvartheta*self.ctrl.model.dvartheta_dt
-				#r = exp(-abs(self.ctrl.model.dvartheta/(self.ctrl.model.vartheta_ref))) #2*self.ctrl.vartheta_max-abs(self.ctrl.model.dvartheta)-abs(dw) #-0.1*abs(self.dv_max/self.ctrl.vartheta_ref)
-				r = exp(-(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(2*self.ctrl.vartheta_ref)) #-abs(self.dv_max)
+				k2_0 = 1/(1+0.5*abs(self.ctrl.model.dvartheta)/abs(2*vf))
+				r = exp(-(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(2*vf)) #-abs(self.dv_max)
 				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
-					r *= 0.2
+					r *= exp(-0.5*abs(self.ctrl.model.dvartheta/(2*self.ctrl.vartheta_ref)))
 				k = abs(self.ctrl.model.dvartheta/(2*self.ctrl.vartheta_max))
-				rf = -k*(abs(action-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
+				rf = -k*(abs(action[0]-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
 				r = r + rf
-				'''
-				if self.ctrl.model.time == self.ctrl.tk:
-					def transfer_quality():
-						info = self.ctrl.stepinfo_SS(use_backup=False)
-						time, overshoot = info['settling_time'], info['overshoot']
-						if time is None or overshoot is None:
-							return np.inf
-						else:
-							return time*abs(overshoot)
-					r -= transfer_quality()*0.1
-				'''
-				#print(abs(self.ctrl.model.dvartheta), abs(self.ctrl.model.dvartheta_dt), abs(self.ctrl.model.dvartheta_dt_dt))
-			elif self.ctrl.no_correct or self.ctrl.manual_ctrl:
-				Ay = self.reward_config.get('Ay', 1)
-				rmin, emax = 1e-3, 12000
-				ky = (1/rmin-1)*1/emax
-				ry = Ay/(1+ky*abs(self.ctrl.err_h))
-				r = ry
-			else:
-				raise NotImplementedError
-			return r
-		elif mode == 'VRS': # velocity reward strategy
-			e = self.ctrl.err_vartheta
-			dedt = self.ctrl.deriv_dict.output('dvedt')
-			dedt_prev = self.ctrl.memory_dict.output('dvedt')
-			rv = -dedt if e > 0 else dedt
-			rt = -rv if (np.sign(dedt) != np.sign(dedt_prev)) and abs(dedt) < abs(dedt_prev) else rv
-			return rt
-		elif mode == 'funclike':
-			tp = 3
-			y = self.ctrl.model.vartheta_ref
-			b = y/(pi/2)
-			a = tan(0.95*y/b)/tp
-			y_exp = b*atan(a*self.ctrl.model.time)
-			w_exp = b/(1+a**2*self.ctrl.model.time**2)
-			r = exp((-abs(self.ctrl.model.state_dict['vartheta']-y_exp)-abs(self.ctrl.model.state_dict['wz']-w_exp))/(20*pi/180))
-			return r
+				return r
+		elif reward_type == RewardType.TAE:
+			def rew(self:ControllerEnv, action:np.ndarray):
+				r = -self.ctrl.model.TAE
+				return r
+		elif reward_type == RewardType.TSE:
+			def rew(self:ControllerEnv, action:np.ndarray):
+				r = -self.ctrl.model.TSE
+				return r
+		elif reward_type == RewardType.PID_LIKE:
+			def rew(self:ControllerEnv, action:np.ndarray):
+				r = exp(-10*abs(self.ctrl.model.deltaz_com-self.ctrl.model.deltaz_ref)/(34*pi/180))
+				return r
 		else:
-			return 0.5/(self.ctrl.calc_CS_err()+1) + 0.5/(self.ctrl.calc_SS_err()+1)
+			raise ValueError("Неподдерживаемый тип функции подкрепления: ", reward_type)
+		return rew
+
+
+	def _get_action_def(self) -> Tuple[np.ndarray, np.ndarray]:
+		return np.array([-self.ctrl.action_max]), np.array([self.ctrl.action_max])
+
+
+	def _create_obs_def(self) -> Callable[['ControllerEnv'], Tuple[np.ndarray, np.ndarray]]:
+		if self.observation_type == ObservationType.PID_LIKE:
+			obs_max = np.array([6000, pi, pi])
+		elif self.observation_type == ObservationType.SPEED_MODE:
+			obs_max = np.array([6000, pi, pi, 500, 100])
+		elif self.observation_type == ObservationType.PID_SPEED_AERO:
+			obs_max = np.array([6000, pi, pi, 500, 100, 0.5, 2, 0.6, 0.05, 1.])
+		elif self.observation_type == ObservationType.PID_AERO:
+			obs_max = np.array([6000, pi, pi, 0.5, 2, 0.6, 0.05, 1.])
+		elif self.observation_type == ObservationType.MODEL_STATE:
+			obs_max = np.array([10*pi/180, 12000, 15000, 500, 100, pi, pi])
+		else:
+			raise ValueError("Неподдерживаемый тип вектора состояния среды: ", self.observation_type)
+		return lambda _: (-obs_max, obs_max)
+
+
+	def _create_obs(self) -> Callable[['ControllerEnv'], np.ndarray]:
+		if self.observation_type == ObservationType.PID_LIKE:
+			obs = lambda self: np.array([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt])
+		elif self.observation_type == ObservationType.SPEED_MODE:
+			obs = lambda self: np.array([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt, self.ctrl.model.state_dict['Vx'], self.ctrl.model.state_dict['Vy']])
+		elif self.observation_type == ObservationType.PID_SPEED_AERO:
+			obs = lambda self: np.array([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt,\
+				self.ctrl.model.state_dict['Vx'], self.ctrl.model.state_dict['Vy'],\
+					self.ctrl.model.CXa, self.ctrl.model.CYa, self.ctrl.model.mz, self.ctrl.model.dCm_ddeltaz, self.ctrl.model.Kalpha])
+		elif self.observation_type == ObservationType.PID_AERO:
+			obs = lambda self: np.array([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt,\
+				self.ctrl.model.CXa, self.ctrl.model.CYa, self.ctrl.model.mz, self.ctrl.model.dCm_ddeltaz, self.ctrl.model.Kalpha])
+		elif self.observation_type == ObservationType.MODEL_STATE:
+			obs = lambda self: np.array([self.ctrl.vartheta_ref, *self.ctrl.model.state])
+		else:
+			raise ValueError(f"Неподдерживаемый режим представления вектора состояния среды: {self.observation_type}")
+		return obs
+
+
+	def _get_obs(self):
+		obs = self._get_obs_raw()
+		if self.norm_obs:
+			_, obs_max = self._get_obs_def()
+			obs /= obs_max
+		if len(self.observation_space.shape) > 1:
+			self.state_box = np.vstack([self.state_box, obs])
+			self.state_box = np.delete(self.state_box, 0, 0)
+		else:
+			self.state_box = obs
+		return self.state_box
+
+
+	def is_done(self):
+		return self.ctrl.is_done or self.ctrl.is_nan_err or self.ctrl.is_limit_err
+
 
 	def step(self, action):
+		if self.norm_act and action is not None:
+			_, action_max = self._get_action_def()
+			action *= action_max
 		self.ctrl.step(action)
 		observation = self._get_obs()
-		reward = self.get_reward(action, self.action_prev, self.deltaz_ref_back)
-		self.action_prev = action
-		self.deltaz_ref_back = self.ctrl.model.deltaz_ref
+		reward = self.get_reward(action)
 		done = self.is_done()
 		info = {} #'storage': self.ctrl.storage}
 		return observation, reward, done, info
 
-	def reset(self):
+
+	def reset(self, state0:np.ndarray=None):
 		self.dv_max = 0
-		self.ctrl.reset()
+		self.ctrl.reset(state0=state0)
 		self.state_box = np.zeros(self.observation_space.shape)
 		observation = self._get_obs()
 		return observation
 
+
 	def render(self, mode='human'):
 		pass
-
-
-def main():
-	pass
-
-if __name__ == '__main__':
-	main()

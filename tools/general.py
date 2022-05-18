@@ -1,3 +1,4 @@
+import os
 import matplotlib.pyplot as plt
 from openpyxl import Workbook
 
@@ -133,6 +134,7 @@ class Storage:
         plt.show()
 
     def save(self, filename='storage.xls', base=None):
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         if len(self.storage) == 0:
             raise ValueError("Невозможно сохранить хранилище: пустое хранилище")
         wb = Workbook()

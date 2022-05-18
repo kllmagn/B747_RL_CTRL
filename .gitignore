@@ -4,4 +4,4 @@ __pycache__
 .logs
 .old_logs
 .output
-ctrl/tmp_models
+core/tmp_models
