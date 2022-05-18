@@ -1,24 +1,26 @@
 import os
 import copy
 from math import pi
+from pathlib import Path
 import random
 from threading import Thread
-from matplotlib.pyplot import plot
+from typing import Any, List, Union
 
 import numpy as np
 
-from stable_baselines3 import A2C, PPO, SAC, TD3, DQN, DDPG
-import stable_baselines3
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3 import A2C, PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
-from stable_baselines3.common.evaluation import evaluate_policy
+from core.controller import CtrlType
+
+from tools.general import Storage
+
 from .callbacks import *
 from tensorboard import program
 
 from tqdm import tqdm
-
-import torch as th
 
 import optuna
 
@@ -26,14 +28,14 @@ import onnx
 import onnxruntime as ort
 
 from env.ctrl_env import *
-from .pretrain import pretrain_agent_imit
 from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
+
 class ControllerAgent:
+    '''Агент для взамодействия со средой.'''
 
     def __init__(self, net_class=A2C, use_tb=False, log_dir='./.logs', model_name='best_model'):
-        random.seed(1)
-        th.manual_seed(1) # выставляем seed для детерминированного поведения
+        '''Инициализировать объект агента.'''
         self.log_dir = log_dir # папка с логами
         self.tb_log = os.path.join(self.log_dir, 'tb_log') if use_tb else None # ссылка на папку с логами обучения
         if use_tb: # если используем TensorBoard, то запускаем его
@@ -45,188 +47,113 @@ class ControllerAgent:
             self.tb, self.tb_url = None, None
         self.net_class = net_class # сохраняем используемый класс нейросети
         if self.net_class in hyperparams: # если класс присутствует в базе гиперпараметров, то получаем соответствующие гиперпараметры
-            print('Using existing model configuration.')
-            self.hp = hyperparams[self.net_class]
+            hyps = hyperparams[self.net_class]
+            print(f'Использую существующую конфигурацию модели: {hyps}')
+            self.hp = hyps
         else: # если класса нет, то используются гиперпараметры по умолчанию
             self.hp = {}
         self.model = None # выставляем объект модели нейросети как пустой
         self.model_name = model_name
         self.bm_name = f'{model_name}.zip' # выставляем имя файла модели
 
-        self.callbacks = [] # обязательные Callback функции
 
-    
-    def _init_callbacks(self, verbose:int=0):
-        '''
-        Инициализировать обязательные Callback функции.
-        '''
-        self.callbacks = []
-
-
-    def _wrap_env(self, env, monitor_dir=None, manual_reset=False, use_monitor=True):
-        '''
-        Функция для обертки среды соответствующими классами.
-        '''
+    def _wrap_env(self, env_init:Callable[[], ControllerEnv], monitor_dir=None, manual_reset=False, use_monitor=True) -> DummyVecEnv:
+        '''Функция для обертки среды соответствующими классами.'''
+        n_cpu = 4
+        monitor_path = os.path.join((monitor_dir if monitor_dir else self.log_dir), 'monitor.csv')
+        def _env_init() -> ControllerEnv:
+            env = env_init()
+            if n_cpu == 1 and use_monitor:
+                env = Monitor(env, monitor_path)
+            return env
+        envs = [_env_init for i in range(n_cpu)]
+        if n_cpu > 1:
+            env = SubprocVecEnv(envs)
+        else:
+            env = DummyVecEnv(envs, manual_reset=manual_reset)
         if use_monitor:
-            env = Monitor(env, os.path.join((monitor_dir if monitor_dir else self.log_dir), 'monitor.csv'))
-        env = DummyVecEnv([lambda: env], manual_reset=manual_reset)
+            env = VecMonitor(env, monitor_path)
         #env = VecNormalize(env, gamma=0.95, norm_obs = False, norm_reward=True)
         env.seed(1)
         return env
 
 
-    def _unwrap_env(self, env):
-        '''
-        Функция обратной обертки среды.
-        '''
+    def _unwrap_env(self, env:DummyVecEnv) -> ControllerEnv:
+        '''Функция обратной обертки среды.'''
         return env.envs[0].env
 
 
-    def optimize(self, training_timesteps, *ctrl_env_args, pretrain=False, opt_max=True, opt_hp=True, **ctrl_env_kwargs):
-        '''
-        Оптимизировать нейросетевую модель.
-        '''
+    def optimize(self, env_init_func:Callable[[],ControllerEnv], training_timesteps:int) -> None:
+        '''Оптимизировать нейросетевую модель.'''
+        savebest_dir = os.path.join(self.log_dir, 'optimization') 
         def save_model_callback(study:optuna.Study, trial):
-            if (opt_max and study.best_value <= trial.value) or (not opt_max and study.best_value >= trial.value):
+            '''Функция для сохранения в файл модели наилучшей итерации процесса оптимизации.'''
+            if study.best_value >= trial.value:
                 load_path = os.path.join(self.log_dir, self.bm_name)
                 save_path = os.path.join(self.log_dir, 'optimization', self.bm_name)
                 os.replace(save_path, load_path)
         def objective(trial:optuna.Trial):
-            if opt_hp:
-                hp = trial_hyperparams(self.net_class, trial, self.hp)
-            else:
-                hp = self.hp
-            reward_config = {
-                'k1': trial.suggest_categorical('k1', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
-                'k2': trial.suggest_categorical('k2', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
-                'k3': trial.suggest_categorical('k3', [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9, 1.0]),
-            }
-            env = ControllerEnv(*ctrl_env_args, reward_config=reward_config, **ctrl_env_kwargs)
-            env = self._wrap_env(env, os.path.join(self.log_dir, 'optimization'))
-            self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp)
-            if pretrain:
-                env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], no_correct=True)])
-                self.model = pretrain_agent_imit(self.model, env_expert, timesteps=50000, num_episodes=50)
-                es_startup = 20000
-            else:
-                es_startup = 0
-            total_timesteps = training_timesteps
-            savebest_dir = os.path.join(self.log_dir, 'optimization')
-            #sobtr = SaveOnBestTrainingRewardCallback(self.model_name, 10000, savebest_dir, 1)
-            #cb2 = SaveOnBestQualityMetricCallback(lambda env: env.get_attr('ctrl')[0].model.TAE, 'TAE', 10000, log_dir=savebest_dir, maximize=opt_max) #vth_err_abs.output()
+            hp = trial_hyperparams(self.net_class, trial, self.hp) # получем гиперпараметры сети для данной итерации
+            env = self._wrap_env(env_init_func, os.path.join(self.log_dir, 'optimization')) # оборачиваем среду в векторное представление
+            self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp) # создаем модель
             tf_custom_recorder = CustomTransferProcessRecorder(
-                env_gen=lambda:self._wrap_env(ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs), use_monitor=False),
+                env_gen=env_init_func,
                 vartheta_ref=5*pi/180,
-                state0=[0, 11000, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                state0=np.array([0, 11000, 250, 0, 0, 0]),
                 log_interval=5000,
                 filename=self.bm_name,
                 log_dir=savebest_dir,
                 window_length=5,
                 verbose=0)
-            es = EarlyStopping(lambda: tf_custom_recorder.mean_quality, 'mean_quality', 10000, 4, verbose=1, startup_step=es_startup, maximize=opt_max)
-            with ProgressBarManager(total_timesteps) as callback:
+            with ProgressBarManager(training_timesteps) as callback:
                 cb_list = CallbackList([callback, tf_custom_recorder])
-                self.model.learn(total_timesteps=total_timesteps, callback=cb_list)
+                self.model.learn(total_timesteps=training_timesteps, callback=cb_list)
             self.model = self.net_class.load(os.path.join(savebest_dir, self.bm_name))
             return tf_custom_recorder.best_mean_quality
 
-        study = optuna.create_study(direction=("maximize" if opt_max else "minimize"))
+        study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=500, callbacks=[save_model_callback], catch=(ValueError,))
-        params = study.best_params
-        print('Лучшие параметры:', params)
+        print('Лучшие параметры:', study.best_params)
+        params = dict(study.best_params)
         params['policy_kwargs'] = dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[params[f'n{i+1}'] for i in range(params['n_depth'])])
         for i in range(params['n_depth']):
             del params[f'n{i+1}'] 
         del params['n_depth']
         self.hp = params
-        print('Параметры нейросети:', self.hp)
-
-
-    def pretrain(self, *ctrl_env_args, timesteps:int=50000, preload=False, num_int_episodes:int=100, algo:str='BC', **ctrl_env_kwargs):
-        self.env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
-        env = self._wrap_env(self.env)
-        if preload:
-            preload_path = os.path.join(self.log_dir, self.bm_name)
-            print('Предзагружаю модель из', preload_path)
-            self.model = self.net_class.load(preload_path, tensorboard_log=self.tb_log)
-            self.model.set_env(env)
-        else:
-            self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, **self.hp)
-        env_expert = DummyVecEnv([lambda: ControllerEnv(use_ctrl=ctrl_env_kwargs['use_ctrl'], no_correct=True, manual_ctrl=False, manual_stab=False)])
-        self.model = pretrain_agent_imit(self.model, env_expert, timesteps=timesteps, num_episodes=num_int_episodes, algo=algo)
-        self.model.save(os.path.join(self.log_dir, self.bm_name))
+        print('Полученные гиперпараметры нейросетевой модели:', self.hp)
 
 
     def train(
             self,
-            *ctrl_env_args,
+            env_init_func:Callable[[], ControllerEnv],
             timesteps=50000,
-            preload=False,
-            use_es=True,
+            preload:Union[bool, str]=False,
             optimize=False,
-            opt_max=True,
-            opt_hp=True,
             verbose:int=1,
             log_interval:int=1000,
             show_plotter:bool=False,
-            **ctrl_env_kwargs
+            callbacks_init:List[Callable[[ControllerEnv], Any]]=[],
         ):
-        '''
-        Произвести обучение нейросетевой модели.
-        '''
-        self.env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
-        env = self._wrap_env(self.env)
-        if optimize:
+        '''Произвести обучение нейросетевой модели.'''
+        env = self._wrap_env(env_init_func) # оборачиваем объект в векторное представление
+        if optimize: # если производится предварительная оптимизация
             print('Оптимизирую с помощью Optuna')
-            self.optimize(timesteps, opt_max=opt_max, opt_hp=opt_hp, *ctrl_env_args, **ctrl_env_kwargs)
+            self.optimize(env_init_func, timesteps) 
             self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name), tensorboard_log=self.tb_log, verbose=verbose)
             self.model.set_env(env)
         else:
-            if preload:
-                preload_path = os.path.join(self.log_dir, self.bm_name)
+            if preload: # если модель предзагружается из файла
+                if type(preload) is str:
+                    preload_path = preload
+                else:
+                    preload_path = os.path.join(self.log_dir, self.bm_name)
                 print('Предзагружаю модель из', preload_path)
                 self.model = self.net_class.load(preload_path, tensorboard_log=self.tb_log, verbose=verbose)
                 self.model.set_env(env)
             else:
                 print('Создаю новую модель:', str(self.net_class))
                 self.model = self.net_class('MlpPolicy', env, tensorboard_log=self.tb_log, verbose=verbose, **self.hp)
-        cb1 = SaveOnBestTrainingRewardCallback(self.bm_name, 5000, self.log_dir, 1)
-        cb_metric = SaveOnBestQualityMetricCallback(self.bm_name, lambda env: env.get_attr('ctrl')[0].deltaz_diff_int.output(), 'deltaz_diff_int', 10000, log_dir=self.log_dir, maximize=False)
-        cb2 = EarlyStopping(lambda: cb1.mean_reward, 'vth_err', 10000, 4, verbose=1, maximize=True)
-        def transfer_quality(env):
-            info = env.get_attr('ctrl')[0].stepinfo_SS(use_backup=True)
-            time, overshoot = info['settling_time'], info['overshoot']
-            print('Время ПП:', time, 'Перерегулирование:', overshoot)
-            if time is None or overshoot is None:
-                return np.inf
-            else:
-                return time*abs(overshoot)
-        transfer_callback = SaveOnBestQualityMetricCallback(
-            self.bm_name,
-            transfer_quality,
-            'tf_quality',
-            -1,
-            self.log_dir,
-            verbose=1,
-            maximize=False,
-            mean_num = 10
-        )
-
-        tf_custom_recorder = CustomTransferProcessRecorder(
-            env_gen=lambda:self._wrap_env(ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs), use_monitor=False),
-            vartheta_ref=5*pi/180,
-            state0=[0, 11000, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            log_interval=5000,
-            filename=self.bm_name,
-            log_dir=self.log_dir,
-            window_length=100,
-            verbose=1)
-
-        cbs = [tf_custom_recorder] #, cb1]
-        if use_es:
-            cbs.append(cb2)
-        cb = CallbackList(cbs)
-
+        cb = CallbackList([cb_init(self) for cb_init in callbacks_init])
         tplotter = None
         if show_plotter:
             def tplotter_gen(env):
@@ -237,6 +164,7 @@ class ControllerAgent:
             t = Thread(target=tplotter_gen, args=(env,))
             t.start()
         self.model.learn(total_timesteps=timesteps, callback=cb, log_interval=log_interval, tb_log_name=self.model_name)
+
 
     def convert_to_onnx(self, filename:str):
         '''
@@ -276,91 +204,105 @@ class ControllerAgent:
         print('action:', action, 'value:', value)
 
 
-    def test_env(self, num_interactions:int, env, no_action=False, use_render=False, on_episode_end=None):
-        if not no_action:
+    def _test_env(self, ref_value:float, num_interactions:int, env:ControllerEnv, state0:np.ndarray, manual=True, use_render=False, on_episode_end=None) -> None:
+        if manual:
             self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name))
         done = False
-        obs = env.reset()
+
+        rew = None
+        def _post_step(self:Controller, state=None):
+            nonlocal rew
+            env.ctrl.storage.record('rew', rew)
+            Controller._post_step(self, state)
+        env.ctrl._post_step = _post_step.__get__(env.ctrl, Controller)
+        
+        obs = env.reset(state0)
+        if env.ctrl.use_ctrl:
+            env.ctrl.h_func = lambda _: ref_value
+        else:
+            env.ctrl.vartheta_func = lambda _: ref_value
         state = None
-        storage = None
-        tmp_storage = None
-        rews = []
-        for i in tqdm(range(num_interactions), desc="Тестирование модели"):
-            if no_action:
-                action = [0] if env.envs[0].env.ctrl.manual_stab else [env.envs[0].env.ctrl.model.deltaz_ref]
-            else:
+        for _ in tqdm(range(num_interactions), desc="Тестирование модели"):
+            if manual:
                 action, state = self.model.predict(obs, state=state, deterministic=True)
+            else:
+                action = None
             obs, _, done, _ = env.step(action)
+            rew = env.get_reward(action)
             if done:
                 if on_episode_end:
                     on_episode_end(env)
-                storage = copy.deepcopy(tmp_storage)
-                rews.append(env.buf_infos[0]['episode']['r'])
-                obs = env.reset()
-            else:
-                tmp_storage = env.get_attr('ctrl')[0].storage
+                #obs = env.reset()
             if use_render:
                 env.render()
-        return np.mean(rews), np.std(rews), storage
 
 
-    def test(self, *ctrl_env_args, ht_func=None, varthetat_func=None, plot=False, **ctrl_env_kwargs):
-        ctrl_env_kwargs['random_reset'] = False
+    def test(self, ref_values:List[float], env_init_func:Callable[[], ControllerEnv], state0:np.ndarray=None, plot=False, output_dir:Path=None) -> None:        
+        info = None
+        storage = None
 
-        self.env = ControllerEnv(*ctrl_env_args, h_func=ht_func, vartheta_func=varthetat_func, use_storage=True,\
-            is_testing=True, **ctrl_env_kwargs)
+        def write_info(filepath:str, info:str) -> None:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(info)
 
-        tk = ctrl_env_kwargs['tk']
-        print('Расчет перехода с использованием нейросетевого регулятора [func]')
-        env = self._wrap_env(self.env, manual_reset=True)
-        hf = vf = info = None
-        def callb(env):
-            nonlocal vf, hf, info
-            vf = env.get_attr('ctrl')[0].vartheta_func
-            hf = env.get_attr('ctrl')[0].h_func
-            ctrl_obj = env.get_attr('ctrl')[0]
+        def callb(env:ControllerEnv) -> None:
+            nonlocal storage
+            nonlocal info
+            storage = env.ctrl.storage
+            ctrl_obj = env.ctrl
             if ctrl_obj.use_ctrl:
                 info = ctrl_obj.stepinfo_CS()
             else:
                 info = ctrl_obj.stepinfo_SS()
-            print(info)
-            print('Суммарная ошибка по углу:', ctrl_obj.vth_err.output())
-        num_interactions = int(tk/self.env.ctrl.sample_time)
-        mean_reward, std_reward, storage1 = self.test_env(num_interactions, env, use_render=True, on_episode_end=callb)
-        info_neural = dict(info)
-        print(f"Mean reward = {mean_reward} +/- {std_reward}")
-
-        print('Расчет перехода с использованием ПИД-регулятора [func]')
-        ctrl_env_kwargs['h_func'] = hf
-        ctrl_env_kwargs['vartheta_func'] = vf
-        ctrl_env_kwargs['no_correct'] = ctrl_env_kwargs['use_storage'] = ctrl_env_kwargs['is_testing'] = True
-        ctrl_env_kwargs['manual_ctrl'] = ctrl_env_kwargs['manual_stab'] = False
-        ctrl_env_kwargs['tk'] = tk
-        del ctrl_env_kwargs['sample_time']
-        env = ControllerEnv(*ctrl_env_args, **ctrl_env_kwargs)
-        env = self._wrap_env(env, manual_reset=True)
-        mean_reward, std_reward, storage2 = self.test_env(\
-            num_interactions*int(self.env.ctrl.sample_time/self.env.ctrl.model.dt),\
-                env, no_action=True, use_render=True, on_episode_end=callb)
-        info_pid = dict(info)
-        print(f"Mean reward = {mean_reward} +/- {std_reward}")
-
-        storage2.merge(storage1, 'neural')
         
-        if plot:
-            storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
-            if env.envs[0].env.ctrl.use_ctrl:
-                storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
-            storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
-            storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
+        env = env_init_func() # создаем среду для тестирования
+        tk = env.ctrl.tk
+        num_interactions = int(tk/env.ctrl.sample_time)
+        env.ctrl.use_storage = True
+        
+        env_PID = env_init_func()
+        env_PID.ctrl.ctrl_type = CtrlType.AUTO if (env_PID.ctrl.ctrl_type == CtrlType.MANUAL) else CtrlType.FULL_AUTO
+        env_PID.ctrl.ctrl_mode = None
+        env_PID.ctrl.use_storage = True
+        env_PID.ctrl.sample_time = env_PID.ctrl.model.dt
+        del env_PID.ctrl.model
+        env_PID.ctrl._init_model()
 
-        return storage2, info_neural, info_pid
+        for ref_value in ref_values:
+            print('='*60)
+            print(f"h = {ref_value} [м]" if env.ctrl.use_ctrl else f"vartheta = {ref_value*180/pi} [град]")
+            print(f'Расчет перехода с использованием нейросетевого регулятора [{"h_func" if env.ctrl.use_ctrl else "vartheta_func"}]')
+            self._test_env(ref_value, num_interactions, env, state0, manual=True, use_render=True, on_episode_end=callb)
+            storage1 = copy.deepcopy(storage)
+            info_neural = dict(info)
+            print("Характеристики ПП СС НС:", info_neural)
+            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+
+            print(f'Расчет перехода с использованием ПИД-регулятора [{"h_func" if env_PID.ctrl.use_ctrl else "vartheta_func"}]')
+            num_pid_interactions = num_interactions*int(env.ctrl.sample_time/env.ctrl.model.dt)
+            self._test_env(ref_value, num_pid_interactions, env_PID, state0, manual=False, use_render=True, on_episode_end=callb)
+            storage2 = copy.deepcopy(storage)
+            info_pid = dict(info)
+            print("Характеристики ПП СС ПИД:", info_pid)
+            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+
+            storage2.merge(storage1, 'neural')
+            if plot:
+                storage2.plot(["rew", "rew_neural"], "t", 't, [с]', 'reward, [-]')
+                storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
+                if env.ctrl.use_ctrl:
+                    storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
+                storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
+                storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
+            if output_dir:
+                os.makedirs(os.path.join(output_dir, self.model_name), exist_ok=True)
+                write_info(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}_info.txt"),\
+                    f"СС НС: {info_neural}\nСС ПИД: {info_pid}")
+                storage2.save(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}.xlsx"))
 
 
-    def show(self):
-        '''
-        Показать структуру модели.
-        '''
+    def show(self) -> None:
+        '''Показать структуру модели.'''
         if self.model is not None:
             attrs = ['gamma', 'max_grad_norm', 'gae_lambda', 'n_steps', 'learning_rate', 'ent_coef', 'vf_coef']
             print(self.model.policy.optimizer_class)

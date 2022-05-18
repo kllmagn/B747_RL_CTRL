@@ -82,18 +82,19 @@ hyperparams = {
     },
     A2C: {
         #'use_sde': True,
-        'use_rms_prop': True,
-        'learning_rate': 0.00013219127332957597,
-        'ent_coef': 0.0026650043954570186,
-        'vf_coef': 0.10796014008883446,
-        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[337, 380]) #, optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
-        },
-    "A2Copt": {
+        #'use_rms_prop': True,
+        #'learning_rate': 0.00013219127332957597,
+        #'ent_coef': 0.0026650043954570186,
+        #'vf_coef': 0.10796014008883446,
+        #'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[337, 380], optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
+        'policy_kwargs': dict(optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
+        }, # 337, 380
+    'A2C_opt': {
         'gamma': 0.99,
         'max_grad_norm': 0.9,
         'use_rms_prop': False,
         'gae_lambda': 0.99,
-        'n_steps': 1, # выбрано
+        #'n_steps': 1, # выбрано
         'learning_rate': 0.0038416303921840625,
         'ent_coef': 1.2239639220509283e-06,
         'vf_coef': 0.3489087299420313,
