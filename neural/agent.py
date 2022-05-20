@@ -4,9 +4,10 @@ from math import pi
 from pathlib import Path
 import random
 from threading import Thread
-from typing import Any, List, Union
+from typing import Any, Dict, List, Union
 
 import numpy as np
+import pandas as pd
 
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -15,7 +16,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CallbackList
 from core.controller import CtrlType
 
-from tools.general import Storage
+from tools.general import Storage, get_model_name_desc
 
 from .callbacks import *
 from tensorboard import program
@@ -53,6 +54,10 @@ class ControllerAgent:
         else: # если класса нет, то используются гиперпараметры по умолчанию
             self.hp = {}
         self.model = None # выставляем объект модели нейросети как пустой
+        self._init_names(model_name)
+
+
+    def _init_names(self, model_name:str) -> None:
         self.model_name = model_name
         self.bm_name = f'{model_name}.zip' # выставляем имя файла модели
 
@@ -237,30 +242,23 @@ class ControllerAgent:
                 env.render()
 
 
-    def test(self, ref_values:List[float], env_init_func:Callable[[], ControllerEnv], state0:np.ndarray=None, plot=False, output_dir:Path=None) -> None:        
+    def test(self, ref_values:List[float], env_init_func:Union[Dict[str, Callable[[], ControllerEnv]], Callable[[], ControllerEnv]], state0:np.ndarray=None, plot=False, output_dir:Path=None, collect=False) -> None:        
         info = None
-        storage = None
-
-        def write_info(filepath:str, info:str) -> None:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(info)
+        tmp_storage = None
 
         def callb(env:ControllerEnv) -> None:
-            nonlocal storage
+            nonlocal tmp_storage
             nonlocal info
-            storage = env.ctrl.storage
+            tmp_storage = env.ctrl.storage
             ctrl_obj = env.ctrl
             if ctrl_obj.use_ctrl:
                 info = ctrl_obj.stepinfo_CS()
             else:
                 info = ctrl_obj.stepinfo_SS()
         
-        env = env_init_func() # создаем среду для тестирования
-        tk = env.ctrl.tk
-        num_interactions = int(tk/env.ctrl.sample_time)
-        env.ctrl.use_storage = True
-        
-        env_PID = env_init_func()
+        env_inits = env_init_func if type(env_init_func) is dict else {self.model_name: env_init_func}
+
+        env_PID = env_inits[list(env_inits.keys())[0]]()
         env_PID.ctrl.ctrl_type = CtrlType.AUTO if (env_PID.ctrl.ctrl_type == CtrlType.MANUAL) else CtrlType.FULL_AUTO
         env_PID.ctrl.ctrl_mode = None
         env_PID.ctrl.use_storage = True
@@ -268,37 +266,60 @@ class ControllerAgent:
         del env_PID.ctrl.model
         env_PID.ctrl._init_model()
 
+        model_name_backup = self.model_name
+
         for ref_value in ref_values:
+            data = pd.DataFrame(columns=['Тип СС', 'σ, [%]', 'tпп, [с]', 'tв, [с]', f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}"])
+
             print('='*60)
-            print(f"h = {ref_value} [м]" if env.ctrl.use_ctrl else f"vartheta = {ref_value*180/pi} [град]")
-            print(f'Расчет перехода с использованием нейросетевого регулятора [{"h_func" if env.ctrl.use_ctrl else "vartheta_func"}]')
-            self._test_env(ref_value, num_interactions, env, state0, manual=True, use_render=True, on_episode_end=callb)
-            storage1 = copy.deepcopy(storage)
-            info_neural = dict(info)
-            print("Характеристики ПП СС НС:", info_neural)
-            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+            print(f"h = {ref_value} [м]" if env_PID.ctrl.use_ctrl else f"vartheta = {ref_value*180/pi} [град]")
 
             print(f'Расчет перехода с использованием ПИД-регулятора [{"h_func" if env_PID.ctrl.use_ctrl else "vartheta_func"}]')
-            num_pid_interactions = num_interactions*int(env.ctrl.sample_time/env.ctrl.model.dt)
+            num_pid_interactions = int(env_PID.ctrl.tk/env_PID.ctrl.model.dt)
             self._test_env(ref_value, num_pid_interactions, env_PID, state0, manual=False, use_render=True, on_episode_end=callb)
-            storage2 = copy.deepcopy(storage)
+            storage = copy.deepcopy(tmp_storage)
             info_pid = dict(info)
             print("Характеристики ПП СС ПИД:", info_pid)
-            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+            data = data.append({'Тип СС': "СУ ПИД" if env_PID.ctrl.use_ctrl else "СС ПИД", 'σ, [%]': info_pid['overshoot'],\
+                'tпп, [с]': info_pid['settling_time'], 'tв, [с]': info_pid['rise_time'],\
+                    f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}": info_pid['static_error']}, ignore_index=True)
 
-            storage2.merge(storage1, 'neural')
+            for model_name, env_init in env_inits.items():
+                env = env_init() # создаем среду для тестирования
+                tk = env.ctrl.tk
+                num_interactions = int(tk/env.ctrl.sample_time)
+                env.ctrl.use_storage = True
+                self._init_names(model_name)
+
+                print(f'Расчет перехода с использованием нейросетевого регулятора [{"h_func" if env.ctrl.use_ctrl else "vartheta_func"}]')
+                self._test_env(ref_value, num_interactions, env, state0, manual=True, use_render=True, on_episode_end=callb)
+                storage_neural = copy.deepcopy(tmp_storage)
+                info_neural = dict(info)
+                print(f"Характеристики ПП {model_name}:", info_neural)
+                data = data.append({'Тип СС': get_model_name_desc(model_name), 'σ, [%]': info_neural['overshoot'],\
+                'tпп, [с]': info_neural['settling_time'], 'tв, [с]': info_neural['rise_time'],\
+                    f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}": info_neural['static_error']}, ignore_index=True)
+
+                storage.merge(storage_neural, model_name)
+
             if plot:
-                storage2.plot(["rew", "rew_neural"], "t", 't, [с]', 'reward, [-]')
-                storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
+                storage.plot(["vartheta_ref", "vartheta", *[f"vartheta_{model_name}" for model_name in env_inits]], "t", 't, [с]', 'ϑ, [град]')
                 if env.ctrl.use_ctrl:
-                    storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
-                storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
-                storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
+                    storage.plot(['hzh', 'y', *[f"h_{model_name}" for model_name in env_inits]], "t", 't, [с]', 'h, [м]')
+                storage.plot(['U_com', 'U_PID_neural', *[f"U_com_{model_name}" for model_name in env_inits]], 't', 't, [с]', 'Uком, [град]')
+                storage.plot(["deltaz", *[f"deltaz_{model_name}" for model_name in env_inits]], "t", 't, [с]', 'δ, [град]')
+                storage.plot(["rew", *[f"rew_{model_name}" for model_name in env_inits]], "t", 't, [с]', 'reward, [-]')
+
             if output_dir:
-                os.makedirs(os.path.join(output_dir, self.model_name), exist_ok=True)
-                write_info(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}_info.txt"),\
-                    f"СС НС: {info_neural}\nСС ПИД: {info_pid}")
-                storage2.save(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}.xlsx"))
+                model_dir = output_dir if (collect or len(env_inits) > 1) else os.path.join(output_dir, self.model_name)
+                filepath = os.path.join(model_dir, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}.xlsx")
+                os.makedirs(model_dir, exist_ok=True)
+                data.set_index('Тип СС', inplace=True)
+                data.to_excel(os.path.join(model_dir, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}_info.xlsx"),\
+                    index=True, header=True)
+                storage.save(filepath, base="t")
+
+        self._init_names(model_name_backup)
 
 
     def show(self) -> None:

@@ -29,7 +29,7 @@ class ResetRefMode(Enum):
     HYBRID = 2 # Гибридный метод
 
 class DisturbanceMode(Enum):
-    AERO = 0 # Погрешности а/д коэффициентов в виде шума
+    AERO_DISTURBANCE = 0 # Погрешности а/д коэффициентов в виде шума
 
 class AeroComponent(Enum):
     CXA = 0
@@ -175,10 +175,17 @@ class Controller:
                 self._init_model()
             self.model.set_initial([0, h0, Vx, Vy, vartheta0, wz0])
 
-        if self.disturbance_mode == DisturbanceMode.AERO:
+        if self.disturbance_mode == DisturbanceMode.AERO_DISTURBANCE:
             self.logger.debug("[_pre_step] Выставляю случайную ошибку в а/д коэффициентах")
             if self.aero_err is None:
-                self.model.aero_err = np.random.normal(0, 0.7, size=(5,))
+                self.model.aero_err =\
+                    np.array([
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(0.1, 0.5, size=None),
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(0.1, 0.5, size=None),
+                    ])
             else:
                 self.model.aero_err = self.aero_err
 
@@ -191,25 +198,27 @@ class Controller:
         self.model.initialize()
 
 
-    def _pre_step(self, state=None):
+    def _pre_step(self, action:np.ndarray, state=None):
         '''Выполнить действия перед шагом интегрирования.'''
         pass
 
 
-    def _post_step(self, state=None):
+    def _post_step(self, action:np.ndarray, state=None):
         '''Выполнить действия после шага интегрирования.'''
         if self.use_storage:
             self.logger.debug("[_post_step] Запись параметров в хранилище")
             # используется режим записи состояния модели
             self.storage.record("t", self.model.time)
-            self.storage.record('deltaz', self.model.deltaz_com*180/pi)
-            self.storage.record('deltaz_ref', self.model.deltaz_ref*180/pi)
-            self.storage.record('deltaz_real', self.model.deltaz_real*180/pi)
+            self.storage.record('U_com', self.model.deltaz_com)
+            self.storage.record('U_PID', self.model.deltaz_ref)
+            self.storage.record('deltaz', self.model.deltaz_real*180/pi)
             self.storage.record('hzh', self.model.hzh)
             self.storage.record('vartheta_ref', self.vartheta_ref*180/pi)
+            if action is not None:
+                self.storage.record('U_RL', action[0])
             if state is None:
                 state = self.model.state_dict
-            angles = ['alpha', 'vartheta', 'psi', 'gamma']
+            angles = ['vartheta']
             for k, v in state.items():
                 if k in angles:
                     v *= 180/pi
@@ -243,14 +252,14 @@ class Controller:
         # ===========================================================
         # производим резервное копирование вектора состояния мат. модели
         self.state_backup = self.model.state
-        self._pre_step() # выполняем операции перед шагом интегрирования
+        self._pre_step(action) # выполняем операции перед шагом интегрирования
         self.model.step() # производим симуляцию модели на один шаг
-        self._post_step() # выполняем операции после шага интегрирования
+        self._post_step(action) # выполняем операции после шага интегрирования
         # выполняем интегрирование до тех пор пока не будет достигнут шаг взаимодействия
         while ((round(round(self.model.time/self.model.dt) % round(self.sample_time/self.model.dt))) != 0):
-            self._pre_step()
+            self._pre_step(action)
             self.model.step()
-            self._post_step()
+            self._post_step(action)
 
 
     @property

@@ -1,12 +1,22 @@
 import os
+from typing import Union
 import matplotlib.pyplot as plt
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.chart.axis import ChartLines
+from openpyxl.chart import (
+    ScatterChart,
+    Reference,
+    Series,
+)
+import pandas as pd
 
 stepinfo_template = {
     'overshoot': None,
     'rise_time': None,
     'settling_time': None
 }
+
+model_separator = '__'
 
 def calc_err(x1, x2) -> float:
     err = x1 - x2
@@ -101,6 +111,72 @@ class MemoryDict:
     def output(self, key:str):
         return self.memory[key]
 
+label_units = {
+    'h': 'м',
+    'U': 'В',
+    'vartheta': 'град',
+    'alpha': 'град',
+    'wz': '1/с',
+    'rew': '-',
+    'deltaz': 'град',
+    'x': 'м',
+    'y': 'м',
+    'V': 'м/с',
+    'ax': 'м/с^2',
+    'ay': 'м/с^2',
+    't': 'с',
+}
+
+def comp_begin(label:str, target:str) -> bool:
+    return len(label) >= len(target) and label[:len(target)] == target
+
+def get_label_unit(label:str) -> Union[str, None]:
+    for target, unit in label_units.items():
+        if comp_begin(label, target):
+            return f"[{unit}]"
+    return None
+
+def get_model_name_desc(model_name:str) -> str:
+    description = ""
+    method_to_name_mapping = {
+        'obs': {
+            "SPEED_MODE": "ПИД-СКОР",
+            "PID_SPEED_AERO": "ПИД-СКОР-АД",
+            'PID_LIKE': "ПИД",
+        },
+        'ctrl_mode':
+        {
+            "ADD_DIRECT_CONTROL": "ПКУ",
+            "ADD_PROC_CONTROL": "ОКУ",
+            "DIRECT_CONTROL": "ПУ",
+        },
+        'reset_ref_modes': {
+            "CONST": "ПУТ",
+            "OSCILLATING": "ОУТ",
+            "HYBRID": "ГМ",
+        },
+        'disturbance':
+        {
+            'AERO_DISTURBANCE': "АД-ПОГР"
+        }
+    }
+    for mapping in method_to_name_mapping.values():
+        for name, desc in mapping.items():
+            if name in model_name:
+                description += ' + ' + desc if description else desc
+                model_name = model_name.replace(name, "")
+                break
+    return description
+
+def get_label_desc(label:str) -> str:
+    if comp_begin(label, 'vartheta_ref'):
+        return "Требуемый угол тангажа"
+    elif comp_begin(label, "hzh"):
+        return "Требуемая высота полета"
+    elif model_separator not in label:
+        return "СС ПИД"
+    return get_model_name_desc(label)
+
 
 class Storage:
     def __init__(self):
@@ -134,26 +210,61 @@ class Storage:
         plt.show()
 
     def save(self, filename='storage.xls', base=None):
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        print(f"Сохраняю хранилище в {filename}")
         if len(self.storage) == 0:
             raise ValueError("Невозможно сохранить хранилище: пустое хранилище")
-        wb = Workbook()
-        ws = wb.active
-        if base:
-            j = 2
-            ws.cell(row=1, column=1).value = base
-            for i in range(len(self.storage[base])):
-                ws.cell(row=i+2, column=1).value = self.storage[base][i]
-        else:
-            j = 1
-        for k, v in self.storage.items():
-            if base and k == base:
-                continue
-            ws.cell(row=1, column=j).value = k
-            for i in range(len(v)):
-                ws.cell(row=i+2, column=j).value = v[i]
-            j += 1
-        wb.save(filename)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        data = pd.DataFrame.from_dict(self.storage, orient='columns')
+
+        def place_unit(label:str) -> str:
+            if model_separator in label:
+                parts = label.split(model_separator)
+                unit = get_label_unit(parts[0])
+                if unit:
+                    parts[0] = f"{parts[0]}, {unit}"
+                return model_separator.join(parts)
+            else:
+                unit = get_label_unit(label)
+                if unit:
+                    return f"{label}, {unit}"
+                else:
+                    return label
+
+        data.columns = list(map(place_unit, data.columns))
+        if base and base in self.storage:
+            data.set_index(place_unit(base), inplace=True)
+        writer = pd.ExcelWriter(filename)
+        data.to_excel(writer, index=True, header=True, sheet_name="data")
+        ws = writer.sheets['data']
+
+        def write_chart(labels:list, pos:str):
+            chart = ScatterChart()
+            #chart.title = labels[0]
+            #chart.style = 13
+            chart.x_axis.title = 'Время t, [с]'
+            chart.x_axis.minorGridlines = ChartLines()
+            chart.y_axis.minorGridlines = ChartLines()
+            chart.y_axis.title = labels[0]
+            chart.legend.position = 'b'
+            time = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+            for label in labels:
+                values = Reference(ws, min_col=data.columns.get_loc(label)+2, min_row=2, max_row=ws.max_row)
+                series = Series(values, time, title_from_data=False, title=get_label_desc(label))
+                series.smooth = True
+                chart.series.append(series)
+            ws.add_chart(chart, pos)
+
+        base_labels = [label for label in data.keys() if model_separator not in label]
+        for base_label in base_labels:
+            child_labels = [label for label in data.keys() if (len(base_label) < len(label)) and label[:len(base_label)] == base_label and model_separator in label]
+            if base_label == 'vartheta, [град]':
+                child_labels.append('vartheta_ref, [град]')
+            elif base_label in ['h, [м]', 'y, [м]']:
+                child_labels.append('hzh, [м]')
+            labels = [base_label, *child_labels]
+            write_chart(labels, 'A5')
+
+        writer.save()
 
     def merge(self, obj, prefix:str):
-        self.storage.update(dict([(k+'_'+prefix, v) for k,v in obj.storage.items()]))
+        self.storage.update(dict([(k+model_separator+prefix, v) for k,v in obj.storage.items()]))
