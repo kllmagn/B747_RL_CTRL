@@ -2,23 +2,12 @@ import os
 import copy
 from math import pi
 from pathlib import Path
-import random
 from threading import Thread
 from typing import Any, Dict, List, Union
 
 import numpy as np
 import pandas as pd
 
-from stable_baselines3 import A2C, PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CallbackList
-from core.controller import CtrlType
-
-from tools.general import Storage, get_model_name_desc
-
-from .callbacks import *
 from tensorboard import program
 
 from tqdm import tqdm
@@ -28,6 +17,15 @@ import optuna
 import onnx
 import onnxruntime as ort
 
+from stable_baselines3 import A2C, PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import CallbackList
+from core.controller import CtrlType
+
+from tools.general import get_model_name_desc
+from .callbacks import *
 from env.ctrl_env import *
 from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
