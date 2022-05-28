@@ -103,6 +103,7 @@ class ControllerEnv(gym.Env):
 
 
 	def _get_reward_def(self, reward_type:RewardType, reward_config:dict={}) -> Callable[['ControllerEnv', np.ndarray], float]:
+		'''Получить определение функции награды среды.'''
 		if reward_type == RewardType.CLASSIC:
 			k1, k2, k3 = reward_config.get('k1', 2), reward_config.get('k2', 2), reward_config.get('k3', 1)
 			k0 = calc_exp_k(0.8, 0.3) #reward_config.get('k0', 2) #2+self.ctrl.model.time # раньше был 1
@@ -182,10 +183,12 @@ class ControllerEnv(gym.Env):
 
 
 	def _get_action_def(self) -> Tuple[np.ndarray, np.ndarray]:
+		'''Получить определение управления (предельные величины).'''
 		return np.array([-self.ctrl.action_max]), np.array([self.ctrl.action_max])
 
 
 	def _create_obs_def(self) -> Callable[['ControllerEnv'], Tuple[np.ndarray, np.ndarray]]:
+		'''Получить определение вектора состояния среды (предельные величины вектора).'''
 		if self.observation_type == ObservationType.PID_LIKE:
 			obs_max = np.array([60*pi, pi, pi])
 		elif self.observation_type == ObservationType.SPEED_MODE:
@@ -202,6 +205,7 @@ class ControllerEnv(gym.Env):
 
 
 	def _create_obs(self) -> Callable[['ControllerEnv'], np.ndarray]:
+		'''Сформировать функцию получения вектора состояния среды (в зависимости от режима).'''
 		if self.observation_type == ObservationType.PID_LIKE:
 			obs = lambda self: np.array([self.ctrl.model.dvartheta_int, self.ctrl.model.dvartheta, self.ctrl.model.dvartheta_dt])
 		elif self.observation_type == ObservationType.SPEED_MODE:
@@ -234,14 +238,17 @@ class ControllerEnv(gym.Env):
 
 
 	def set_rew_config(self, rew_config:dict):
+		'''Установить конфигурацию функции подкрепления среды.'''
 		ControllerEnv.get_reward = self._get_reward_def(self.reward_type, rew_config)
 
 
 	def is_done(self):
+		'''Является ли процесс моделирования оконченым.'''
 		return self.ctrl.is_done or self.ctrl.is_nan_err or self.ctrl.is_limit_err
 
 
 	def step(self, action):
+		'''Произвести один шаг симуляции среды.'''
 		if self.norm_act and action is not None:
 			_, action_max = self._get_action_def()
 			action *= action_max
@@ -254,6 +261,7 @@ class ControllerEnv(gym.Env):
 
 
 	def reset(self, state0:np.ndarray=None):
+		'''Выполнить сброс среды.'''
 		self.ctrl.reset(state0=state0)
 		self.state_box = np.zeros(self.observation_space.shape)
 		observation = self._get_obs()
