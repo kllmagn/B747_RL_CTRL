@@ -26,7 +26,7 @@ hyperparams = {
         #'target_entropy': -3,
         'learning_starts': int(10000)
     },
-    PPO: {
+    'PPO': {
         'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[321, 210, 206]),
         'learning_rate': 0.0008119972057477548,
         'gae_lambda': 0.9299298432752194,
@@ -86,7 +86,7 @@ hyperparams = {
         #'learning_rate': 0.00013219127332957597,
         #'ent_coef': 0.0026650043954570186,
         #'vf_coef': 0.10796014008883446,
-        #'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[337, 380], optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
+        'policy_kwargs': dict(activation_fn=th.nn.Tanh, net_arch=[dict(pi=[64, 64], vf=[64, 64])]) #, optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
         #'policy_kwargs': dict(optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-7))
         }, # 337, 380
     'A2C_opt': {

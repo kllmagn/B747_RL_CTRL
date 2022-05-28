@@ -4,7 +4,7 @@ from tools.general import *
 
 from .model import Model
 
-from math import pi, sin
+from math import exp, pi, sin
 import random
 from enum import Enum
 from typing import Callable, Union
@@ -147,9 +147,10 @@ class Controller:
             Vx = random.uniform(100, 265)
             Vy = random.uniform(-20, 20)
             wz0 = random.uniform(-0.001, 0.001)
-            vartheta0 = random.uniform(-self.vartheta_max, self.vartheta_max)
+            vartheta0 = 0 #random.uniform(-self.vartheta_max, self.vartheta_max)
             if self.reset_ref_mode == ResetRefMode.CONST:
-                vartheta_ref = random.uniform(-self.vartheta_max, self.vartheta_max)
+                vartheta_ref = random.uniform(-self.vartheta_max, -1*pi/180)
+                vartheta_ref *= random.choice([1.0, -1.0])
                 self.vartheta_func = lambda _: vartheta_ref
             elif self.reset_ref_mode == ResetRefMode.OSCILLATING:
                 # 0.01 Гц, 0.5 Гц | -10*pi/180<=A<=10*pi/180 | sin
@@ -234,7 +235,6 @@ class Controller:
         else: # если СУ ПИД в составе контура
             # выставляем требуемую высоту в соответствии с функцией
             self.model.hzh = self.h_func(self.model.time)
-            self.model.vartheta_zh = action[0]
         if not self.model.use_PID_SS: # если СС ПИД НЕ в составе контура
             if self.ctrl_mode is None or self.ctrl_mode == CtrlMode.DIRECT_CONTROL:
                 self.model.deltaz = action[-1]
@@ -327,6 +327,19 @@ class Controller:
         '''Вычисление ошибки СУ ЛА.'''
         h = self.model.state_dict['y']
         return calc_err(h, self.model.hzh)
+
+
+    def quality(self) -> float:
+        '''Показатель качества ПП.'''
+        quality = exp(-60*0.1*self.model.ITSE/(self.tk*self.vartheta_ref**2))
+        #quality = exp(-self.vartheta_max*self.model.IAE/self.vartheta_ref)
+        '''
+        info = self.stepinfo_SS()
+        tp = info['settling_time']
+        overshoot = info['overshoot']
+        quality = exp(-0.01*(abs(overshoot)+tp))
+        '''
+        return quality
 
 
     def stepinfo_SS(self, use_backup=False) -> dict:

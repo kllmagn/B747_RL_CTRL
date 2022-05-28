@@ -1,6 +1,8 @@
 import os
 from typing import Union
 import matplotlib.pyplot as plt
+import math
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart.axis import ChartLines
 from openpyxl.chart import (
@@ -8,6 +10,9 @@ from openpyxl.chart import (
     Reference,
     Series,
 )
+from openpyxl.utils.units import points_to_pixels, pixels_to_EMU
+from openpyxl.drawing.line import LineProperties
+
 import pandas as pd
 
 stepinfo_template = {
@@ -17,6 +22,10 @@ stepinfo_template = {
 }
 
 model_separator = '__'
+
+
+def calc_exp_k(rk:float, xk:float) -> float:
+    return -math.log(rk)/xk
 
 def calc_err(x1, x2) -> float:
     err = x1 - x2
@@ -28,8 +37,9 @@ def calc_err(x1, x2) -> float:
         err = 0
     return abs(err)
 
+
 def calc_stepinfo(ys:list, y_base:float, error_band=0.05, ts:list=None):
-    overshoot = (max(ys)-y_base)/y_base*100 if y_base != 0 else None #max(ys)
+    overshoot = ((max(ys) if y_base > 0 else min(ys))-y_base)/y_base*100 if y_base != 0 else None #max(ys)
     try:
         tr = ts[next(i for i in range(0,len(ys)-1) if (ys[i]-ys[0])/(y_base-ys[0])>=(1-error_band))]-ts[0] if ts else None
     except StopIteration:
@@ -111,6 +121,7 @@ class MemoryDict:
     def output(self, key:str):
         return self.memory[key]
 
+
 label_units = {
     'h': 'м',
     'U': 'В',
@@ -127,8 +138,10 @@ label_units = {
     't': 'с',
 }
 
+
 def comp_begin(label:str, target:str) -> bool:
     return len(label) >= len(target) and label[:len(target)] == target
+
 
 def get_label_unit(label:str) -> Union[str, None]:
     for target, unit in label_units.items():
@@ -136,19 +149,20 @@ def get_label_unit(label:str) -> Union[str, None]:
             return f"[{unit}]"
     return None
 
+
 def get_model_name_desc(model_name:str) -> str:
     description = ""
     method_to_name_mapping = {
         'obs': {
-            "SPEED_MODE": "ПИД-СКОР",
-            "PID_SPEED_AERO": "ПИД-СКОР-АД",
-            'PID_LIKE': "ПИД",
+            "SPEED_MODE": "ПОДОБ-СКОР",
+            "PID_SPEED_AERO": "ПОДОБ-СКОР-АД",
+            'PID_LIKE': "ПОДОБ",
         },
         'ctrl_mode':
         {
-            "ADD_DIRECT_CONTROL": "ПКУ",
-            "ADD_PROC_CONTROL": "ОКУ",
-            "DIRECT_CONTROL": "ПУ",
+            "ADD_DIRECT_CONTROL": "ПКД",
+            "ADD_PROC_CONTROL": "ОКД",
+            "DIRECT_CONTROL": "ПМУ",
         },
         'reset_ref_modes': {
             "CONST": "ПУТ",
@@ -166,7 +180,10 @@ def get_model_name_desc(model_name:str) -> str:
                 description += ' + ' + desc if description else desc
                 model_name = model_name.replace(name, "")
                 break
+    if not description:
+        description = model_name.split(model_separator)[-1]
     return description
+
 
 def get_label_desc(label:str) -> str:
     if comp_begin(label, 'vartheta_ref'):
@@ -176,6 +193,54 @@ def get_label_desc(label:str) -> str:
     elif model_separator not in label:
         return "СС ПИД"
     return get_model_name_desc(label)
+
+
+def write_dataframe(data:pd.DataFrame, filename:str):
+    writer = pd.ExcelWriter(filename)
+    data.to_excel(writer, index=True, header=True, sheet_name="data")
+    ws = writer.sheets['data']
+
+    def write_chart(labels:list, pos:str):
+        chart = ScatterChart()
+        #chart.title = labels[0]
+        #chart.style = 13
+        chart.x_axis.title = data.index.name
+        chart.x_axis.minorGridlines = ChartLines()
+        chart.y_axis.minorGridlines = ChartLines()
+        name = labels[0]
+        chart.y_axis.title = name.split(model_separator)[0] if model_separator in name else name
+        chart.legend.position = 'b'
+        time = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+        for label in labels:
+            values = Reference(ws, min_col=data.columns.get_loc(label)+2, min_row=2, max_row=ws.max_row)
+            series = Series(values, time, title_from_data=False, title=get_label_desc(label))
+            width=points_to_pixels(8)
+            width=pixels_to_EMU(width)
+            lineProp = LineProperties(w=width)
+            series.graphicalProperties.line = lineProp   
+            series.smooth = True
+            chart.series.append(series)
+        ws.add_chart(chart, pos)
+
+    groups = {}
+    for column in data.columns:
+        if model_separator in column:
+            name = column.split(model_separator)[0]
+        else:
+            name = column
+        if name in groups:
+            groups[name].append(column)
+        else:
+            groups[name] = [column]
+    
+    for labels in groups.values():
+        if labels[0] == 'vartheta, [град]':
+            labels.append('vartheta_ref, [град]')
+        elif labels[0] in ['h, [м]', 'y, [м]']:
+            labels.append('hzh, [м]')
+        write_chart(labels, 'A5')
+
+    writer.save()
 
 
 class Storage:
@@ -233,38 +298,10 @@ class Storage:
         data.columns = list(map(place_unit, data.columns))
         if base and base in self.storage:
             data.set_index(place_unit(base), inplace=True)
-        writer = pd.ExcelWriter(filename)
-        data.to_excel(writer, index=True, header=True, sheet_name="data")
-        ws = writer.sheets['data']
+        write_dataframe(data, filename)
 
-        def write_chart(labels:list, pos:str):
-            chart = ScatterChart()
-            #chart.title = labels[0]
-            #chart.style = 13
-            chart.x_axis.title = 'Время t, [с]'
-            chart.x_axis.minorGridlines = ChartLines()
-            chart.y_axis.minorGridlines = ChartLines()
-            chart.y_axis.title = labels[0]
-            chart.legend.position = 'b'
-            time = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-            for label in labels:
-                values = Reference(ws, min_col=data.columns.get_loc(label)+2, min_row=2, max_row=ws.max_row)
-                series = Series(values, time, title_from_data=False, title=get_label_desc(label))
-                series.smooth = True
-                chart.series.append(series)
-            ws.add_chart(chart, pos)
+    def set_suffix(self, suffix:str):
+        self.storage = {f'{k}{model_separator}{suffix}': v for k, v in self.storage.items()}
 
-        base_labels = [label for label in data.keys() if model_separator not in label]
-        for base_label in base_labels:
-            child_labels = [label for label in data.keys() if (len(base_label) < len(label)) and label[:len(base_label)] == base_label and model_separator in label]
-            if base_label == 'vartheta, [град]':
-                child_labels.append('vartheta_ref, [град]')
-            elif base_label in ['h, [м]', 'y, [м]']:
-                child_labels.append('hzh, [м]')
-            labels = [base_label, *child_labels]
-            write_chart(labels, 'A5')
-
-        writer.save()
-
-    def merge(self, obj, prefix:str):
-        self.storage.update(dict([(k+model_separator+prefix, v) for k,v in obj.storage.items()]))
+    def merge(self, obj:'Storage', suffix:str):
+        self.storage.update({f"{k}{model_separator}{suffix}": v for k, v in obj.storage.items()})

@@ -1,4 +1,5 @@
 import random
+import optuna
 from typing import Callable, Tuple
 from core.controller import Controller, CtrlMode
 
@@ -8,6 +9,8 @@ import torch as th
 from math import exp, pi
 from gym import spaces
 from enum import Enum
+
+from tools.general import calc_exp_k, calc_stepinfo
 
 
 class ObservationType(Enum):
@@ -19,9 +22,39 @@ class ObservationType(Enum):
 
 class RewardType(Enum):
 	CLASSIC = 0
-	TAE = 1
-	TSE = 2
-	PID_LIKE = 3
+	PID_LIKE = 1
+	QUALITY = 2
+	MINIMAL = 3
+	TF_REFERENCE = 4
+
+def get_rew_config(rew_type:RewardType, trial:optuna.Trial):
+	if rew_type == RewardType.CLASSIC:
+		return {
+			'k1': trial.suggest_uniform('k1', 0.1, 1),
+			'k2': trial.suggest_uniform('k2', 0.1, 1),
+			'k3': trial.suggest_uniform('k3', 0.1, 1),
+			'k0': trial.suggest_uniform('k0', 1.0, 10.0),
+			'kITSE': trial.suggest_uniform('kITSE', 0.01, 10.0),
+			'kf': trial.suggest_uniform('kf', 0.05, 10.0),
+		}
+	elif rew_type == RewardType.PID_LIKE:
+		return {
+			'k': trial.suggest_uniform('k', 1, 20)
+		}
+	elif rew_type == RewardType.MINIMAL:
+		return {
+			'rmax': trial.suggest_uniform('rmax', 0, 1.0),
+			'k1': trial.suggest_uniform('k1', 0.1, 5.0),
+			'k2': trial.suggest_uniform('k2', 0.1, 5.0),
+		}
+	elif rew_type == RewardType.TF_REFERENCE:
+		return {
+			'k1': trial.suggest_uniform('k1', 0.1, 5.0),
+			'k2': trial.suggest_uniform('k1', 0.1, 5.0),
+		}
+	else:
+		raise ValueError(f"Неподдерживаемый тип награды для оптимизации конфигурации: {rew_type}.")
+
 
 class ControllerEnv(gym.Env):
 	"""Среда взаимодействия между контроллером и нейросетевой моделью."""
@@ -69,37 +102,74 @@ class ControllerEnv(gym.Env):
 		self.state_box = np.zeros(self.observation_space.shape)
 
 
-	def _get_reward_def(self, reward_type:RewardType) -> Callable[['ControllerEnv', np.ndarray], float]:
+	def _get_reward_def(self, reward_type:RewardType, reward_config:dict={}) -> Callable[['ControllerEnv', np.ndarray], float]:
 		if reward_type == RewardType.CLASSIC:
+			k1, k2, k3 = reward_config.get('k1', 2), reward_config.get('k2', 2), reward_config.get('k3', 1)
+			k0 = calc_exp_k(0.8, 0.3) #reward_config.get('k0', 2) #2+self.ctrl.model.time # раньше был 1
+			kf = reward_config.get('kf', 0.1)
+			kITSE = reward_config.get('kITSE', 6)
+			kt = calc_exp_k(0.8, 10)
+			ko = calc_exp_k(0.75, 0.15)
+			s = k1 + k2 + k3
+			k1 /= s
+			k2 /= s
+			k3 /= s
+			k2_0 = 1 #1/(1+0.5*abs(self.ctrl.model.dvartheta)/abs(2*vf))
 			def rew(self:ControllerEnv, action:np.ndarray) -> float:
-				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max
-				k1, k2, k3 = 2, 2, 1
-				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
-					# перерегулирование с противоположной стороны
-					self.dv_max = max(self.dv_max, self.ctrl.model.dvartheta) if self.ctrl.model.dvartheta > 0 else min(self.dv_max, self.ctrl.model.dvartheta)
-				s = k1 + k2 + k3
-				k1 /= s
-				k2 /= s
-				k3 /= s
-				k2_0 = 1/(1+0.5*abs(self.ctrl.model.dvartheta)/abs(2*vf))
-				r = exp(-(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(2*vf)) #-abs(self.dv_max)
-				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0:
-					r *= exp(-0.5*abs(self.ctrl.model.dvartheta/(2*self.ctrl.vartheta_ref)))
-				k = abs(self.ctrl.model.dvartheta/(2*self.ctrl.vartheta_max))
-				rf = -k*(abs(action[0]-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
-				r = r + rf
-				return r
-		elif reward_type == RewardType.TAE:
-			def rew(self:ControllerEnv, action:np.ndarray):
-				r = -self.ctrl.model.TAE
-				return r
-		elif reward_type == RewardType.TSE:
-			def rew(self:ControllerEnv, action:np.ndarray):
-				r = -self.ctrl.model.TSE
+				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max # требуемое значение угла тангажа
+				r1 = 0.1*exp(-k0*(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(vf)) 
+				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0: # если перерегулирование сверху
+					r2 = 0.1*exp(-ko*abs(self.ctrl.model.dvartheta/vf)) # чем больше перерегулирование сверху, тем меньше награда
+				else:
+					r2 = 0.1
+				if abs(self.ctrl.model.dvartheta/vf) > 0.05: # если процесс вышел за допустимые пределы по времени ПП
+					r3 = 0.1*exp(-kt*self.ctrl.model.time) # чем дольше идет процесс, тем меньше награда
+				else:
+					r3 = 0.1
+				r4 = 0.7*exp(-kITSE*self.ctrl.model.ITSE/(20*vf**2))
+				rf = -kf*abs(self.ctrl.model.dvartheta/(2*vf))*(abs(action[0]-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
+				r = r1 + r2 + r3 + r4 + rf
 				return r
 		elif reward_type == RewardType.PID_LIKE:
-			def rew(self:ControllerEnv, action:np.ndarray):
-				r = exp(-10*abs(self.ctrl.model.deltaz_com-self.ctrl.model.deltaz_ref)/(34*pi/180))
+			k = reward_config.get('k', 10)
+			def rew(self:ControllerEnv, _:np.ndarray):
+				r = exp(-k*abs(self.ctrl.model.deltaz_com-self.ctrl.model.deltaz_ref)/(34*pi/180))
+				return r
+		elif reward_type == RewardType.QUALITY:
+			def rew(self:ControllerEnv, _:np.ndarray):
+				r = self.ctrl.quality()
+				return r
+		elif reward_type == RewardType.MINIMAL:
+			rmax = reward_config.get('rmax', 0.2)
+			Qmax = 1 #-rmax
+			k1 = reward_config.get('k1', 2)
+			k2 = reward_config.get('k2', 0.5)
+			def rew(self:ControllerEnv, _:np.ndarray) -> float:
+				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max # требуемое значение угла тангажа
+				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0: # если перерегулирование сверху
+					kovershoot = exp(-k1*abs(self.ctrl.model.dvartheta/vf)) # чем больше перерегулирование сверху, тем меньше награда
+				else:
+					kovershoot = 1.
+				if abs(self.ctrl.model.dvartheta/vf) > 0.05: # если процесс вышел за допустимые пределы по времени ПП
+					ktp = exp(-k2*self.ctrl.model.time) # чем дольше идет процесс, тем меньше награда
+				else:
+					ktp = 1.
+				Q = Qmax*self.ctrl.quality() #exp(-2*self.ctrl.model.TSE/(self.ctrl.vartheta_ref**2*self.ctrl.tk))
+				r = rmax*kovershoot*ktp
+				R = Q # + r
+				return R
+		elif reward_type == RewardType.TF_REFERENCE:
+			overshoot_ref = reward_config.get('overshoot_ref', 2)
+			tp_ref = reward_config.get('tp_ref', 5)
+			k = reward_config.get('k', 0.1)
+			tp = 0
+			def rew(self:ControllerEnv, _:np.ndarray):
+				nonlocal tp
+				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max # требуемое значение угла тангажа
+				overshoot = abs(self.ctrl.model.dvartheta/vf)*100
+				if overshoot > 5:
+					tp = self.ctrl.model.time
+				r = exp(-k*abs(overshoot-overshoot_ref)*abs(tp_ref-tp))
 				return r
 		else:
 			raise ValueError("Неподдерживаемый тип функции подкрепления: ", reward_type)
@@ -112,13 +182,13 @@ class ControllerEnv(gym.Env):
 
 	def _create_obs_def(self) -> Callable[['ControllerEnv'], Tuple[np.ndarray, np.ndarray]]:
 		if self.observation_type == ObservationType.PID_LIKE:
-			obs_max = np.array([6000, pi, pi])
+			obs_max = np.array([60*pi, pi, pi])
 		elif self.observation_type == ObservationType.SPEED_MODE:
-			obs_max = np.array([6000, pi, pi, 500, 100])
+			obs_max = np.array([60*pi, pi, pi, 500, 100])
 		elif self.observation_type == ObservationType.PID_SPEED_AERO:
-			obs_max = np.array([6000, pi, pi, 500, 100, 0.5, 2, 0.6, 0.05, 1.])
+			obs_max = np.array([60*pi, pi, pi, 500, 100, 0.5, 2, 0.6, 0.05, 1.])
 		elif self.observation_type == ObservationType.PID_AERO:
-			obs_max = np.array([6000, pi, pi, 0.5, 2, 0.6, 0.05, 1.])
+			obs_max = np.array([60*pi, pi, pi, 0.5, 2, 0.6, 0.05, 1.])
 		elif self.observation_type == ObservationType.MODEL_STATE:
 			obs_max = np.array([10*pi/180, 12000, 15000, 500, 100, pi, pi])
 		else:
@@ -158,6 +228,10 @@ class ControllerEnv(gym.Env):
 		return self.state_box
 
 
+	def apply_rew_config(self, rew_config:dict):
+		ControllerEnv.get_reward = self._get_reward_def(self.reward_type, rew_config)
+
+
 	def is_done(self):
 		return self.ctrl.is_done or self.ctrl.is_nan_err or self.ctrl.is_limit_err
 
@@ -175,7 +249,6 @@ class ControllerEnv(gym.Env):
 
 
 	def reset(self, state0:np.ndarray=None):
-		self.dv_max = 0
 		self.ctrl.reset(state0=state0)
 		self.state_box = np.zeros(self.observation_space.shape)
 		observation = self._get_obs()

@@ -1,6 +1,7 @@
 import io
 from math import exp
 import os
+from typing import List, Union
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -43,14 +44,14 @@ class ProgressBarManager(object):
 			
 
 class CustomTransferProcessRecorder(BaseCallback):
-	def __init__(self, net_class, env_gen, vartheta_ref:float, state0:list, log_interval:int, filename:str, log_dir:str, window_length:int=30, verbose=0):
+	def __init__(self, net_class, env_gen, vartheta_ref:Union[float, List[float]], state0:list, log_interval:int, filename:str, log_dir:str, window_length:int=30, verbose=0):
 		super(CustomTransferProcessRecorder, self).__init__(verbose)
 		self.n_episodes = self.n_episodes_b = 0
-		self.vartheta_ref = vartheta_ref
+		self.vartheta_ref = vartheta_ref if type(vartheta_ref) is list else [vartheta_ref]
 		self.state0 = state0
 		self.log_interval = log_interval
 		self.best_mean_quality = self.mean_quality = 0
-		self.infos = {'settling_time': [], 'overshoot': []}
+		self.infos = {'settling_time': [], 'overshoot': [], 'quality': []}
 		self.log_dir = log_dir
 		self.save_path = os.path.join(log_dir, filename) if filename else None
 		self.env = env_gen
@@ -63,35 +64,40 @@ class CustomTransferProcessRecorder(BaseCallback):
 		ctrl.ctrl_type = CtrlType.MANUAL
 		ctrl.reset_ref_mode = None
 		use_storage, ctrl.use_storage = ctrl.use_storage, True
-		vf, ctrl.vartheta_func = ctrl.vartheta_func, lambda _: self.vartheta_ref
-		ctrl._init_model()
-		obs = env.reset(self.state0)
-		done, state = False, None
+		times, overshoots, qualities = [], [], []
 		buffer = io.BytesIO()
 		self.model.save(buffer)
 		buffer.seek(0)
 		self.test_model = self.net_class.load(buffer)
-		while not done:
-			action, state = self.test_model.predict(obs, state=state, deterministic=True)
-			obs, _, done, _ = env.step(action)
-		info = ctrl.stepinfo_SS(use_backup=False)
-		time, overshoot = info['settling_time'], info['overshoot']
+		vf = ctrl.vartheta_func
+		for vref in self.vartheta_ref:
+			ctrl.vartheta_func = lambda _: vref
+			ctrl._init_model()
+			obs = env.reset(self.state0)
+			done, state = False, None
+			while not done:
+				action, state = self.test_model.predict(obs, state=state, deterministic=True)
+				obs, _, done, _ = env.step(action)
+			info = ctrl.stepinfo_SS(use_backup=False)
+			time, overshoot = info['settling_time'], abs(info['overshoot'])
+			quality = ctrl.quality()
+			times.append(time)
+			overshoots.append(overshoot)
+			qualities.append(quality)
 		ctrl.use_storage = use_storage
 		ctrl.vartheta_func = vf
 		_ = env.reset()
+		time, overshoot, quality = np.mean(times), np.mean(overshoots), np.mean(qualities)
 		self.infos['settling_time'].append(time)
 		self.infos['overshoot'].append(overshoot)
+		self.infos['quality'].append(quality)
 		self.infos['settling_time'], self.infos['overshoot'] = self.infos['settling_time'][-self.window_length:], self.infos['overshoot'][-self.window_length:]
+		self.infos['quality'] = self.infos['quality'][-self.window_length:]
 		time, overshoot = np.mean(self.infos['settling_time']), np.mean(self.infos['overshoot'])
-		if time is None or overshoot is None:
-			time_err = overshoot_err = np.inf
-		else:
-			time_err = time/ctrl.tk
-			overshoot_err = 1/2*abs(overshoot)/40
-		self.mean_quality = quality = exp(-time_err-overshoot_err)
+		self.mean_quality = np.mean(self.infos['quality'])
 		self.logger.record('transfer_custom/settling_time', time)
-		self.logger.record('transfer_custom/overshoot', abs(overshoot))
-		self.logger.record('transfer_custom/quality', quality)
+		self.logger.record('transfer_custom/overshoot', overshoot)
+		self.logger.record('transfer_custom/quality', self.mean_quality)
 
 	def _on_step(self) -> bool:
 		assert "dones" in self.locals, "`dones` variable is not defined, please check your code next to `callback.on_step()`"
