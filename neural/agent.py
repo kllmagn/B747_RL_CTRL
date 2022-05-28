@@ -103,7 +103,7 @@ class ControllerAgent:
             else:
                 hp = self.hp
             env = env_init_func()
-            reward_config = get_rew_config(env.reward_type, trial)
+            reward_config = get_trial_rew_config(env.reward_type, trial)
             del env
             def env_init_func_patched() -> ControllerEnv:
                 env = env_init_func()

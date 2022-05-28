@@ -29,7 +29,7 @@ class RewardType(Enum):
 	MINIMAL = 3
 	TF_REFERENCE = 4
 
-def get_rew_config(rew_type:RewardType, trial:optuna.Trial):
+def get_trial_rew_config(rew_type:RewardType, trial:optuna.Trial):
 	if rew_type == RewardType.CLASSIC:
 		return {
 			'k1': trial.suggest_uniform('k1', 0.1, 1),
