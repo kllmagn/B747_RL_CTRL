@@ -28,6 +28,7 @@ win32api.SetConsoleCtrlHandler(on_exit, True)
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)    
 kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
 
+
 def generate_param(ref_name:str, param_type, getter_filter:typing.Union[typing.Callable, list]=None):
     is_array = param_type in [list, np.ndarray, np.array] # array like
     if param_type is np.ndarray:
@@ -56,6 +57,7 @@ def generate_param(ref_name:str, param_type, getter_filter:typing.Union[typing.C
             self.__getattribute__(ref_name).value = param_type(value)
     return param
 
+
 def generate_signal(ref_name:str, param_type, getter_filter:typing.Union[typing.Callable, list]=None) -> typing.Callable[['Model'], typing.Any]:
     is_array = param_type in [list, np.ndarray, np.array]
     if param_type is np.ndarray:
@@ -74,6 +76,7 @@ def generate_signal(ref_name:str, param_type, getter_filter:typing.Union[typing.
                 val = getter_filter(val)
         return val
     return signal
+
 
 class Model:
     def __init__(self, model="model_simple", use_PID_SS:bool=True, use_PID_CS:bool=True, initial_state:np.ndarray=None, logging_path="model.log", use_RP:bool=True):
@@ -216,6 +219,7 @@ class Model:
 
         self.labels = ['x', 'y', 'Vx', 'Vy', 'vartheta', 'wz']
 
+
     def __del__(self):
         self.logger.info("Удаление объекта модели.")
         if platform.system() == 'Windows':
@@ -223,6 +227,7 @@ class Model:
             del self.dll # на всякий
             kernel32.FreeLibrary(handle)
             os.remove(self.dll_path)
+
 
     def initialize(self):
         """Initialize the Model."""
@@ -232,19 +237,23 @@ class Model:
         self.deltaz = 0
         self.vartheta_zh = 0
 
+
     def step(self):
         """Step through the model Model."""
         self.__step()
         self.step_num += 1
+
 
     def terminate(self):
         """Terminate the model Model."""
         self.logger.info("Принудительная остановка модели.")
         self.__model_terminate()
 
+
     def set_initial(self, state:np.ndarray):
         self.state0 = state
         self.logger.info(f"Установка начального состояния: {self.state0}")
+
 
     @property
     def state_dict(self) -> dict:

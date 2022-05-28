@@ -107,7 +107,7 @@ class ControllerAgent:
             del env
             def env_init_func_patched() -> ControllerEnv:
                 env = env_init_func()
-                env.apply_rew_config(reward_config)
+                env.set_rew_config(reward_config)
                 return env
             env = self._wrap_env(env_init_func_patched, os.path.join(self.log_dir, 'optimization')) # оборачиваем среду в векторное представление
             if opt_hp or self.model is None:
@@ -163,7 +163,7 @@ class ControllerAgent:
         '''Произвести обучение нейросетевой модели.'''
         def env_init_func_patched() -> ControllerEnv:
             env = env_init_func()
-            env.apply_rew_config(reward_config)
+            env.set_rew_config(reward_config)
             return env
         env = self._wrap_env(env_init_func_patched) # оборачиваем объект в векторное представление
         if optimize: # если производится предварительная оптимизация

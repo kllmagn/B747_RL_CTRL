@@ -117,18 +117,23 @@ class ControllerEnv(gym.Env):
 			k2_0 = 1 #1/(1+0.5*abs(self.ctrl.model.dvartheta)/abs(2*vf))
 			def rew(self:ControllerEnv, action:np.ndarray) -> float:
 				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max # требуемое значение угла тангажа
+				# компонент ошибки стабилизации
 				r1 = 0.1*exp(-k0*(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(vf)) 
+				# компонент перерегулирования
 				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0: # если перерегулирование сверху
 					r2 = 0.1*exp(-ko*abs(self.ctrl.model.dvartheta/vf)) # чем больше перерегулирование сверху, тем меньше награда
 				else:
 					r2 = 0.1
+				# компонент времени ПП
 				if abs(self.ctrl.model.dvartheta/vf) > 0.05: # если процесс вышел за допустимые пределы по времени ПП
 					r3 = 0.1*exp(-kt*self.ctrl.model.time) # чем дольше идет процесс, тем меньше награда
 				else:
 					r3 = 0.1
+				# компонент интегральной временной квадратичной ошибки ПП
 				r4 = 0.7*exp(-kITSE*self.ctrl.model.ITSE/(20*vf**2))
+				# формирующий компонент
 				rf = -kf*abs(self.ctrl.model.dvartheta/(2*vf))*(abs(action[0]-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
-				r = r1 + r2 + r3 + r4 + rf
+				r = r1 + r2 + r3 + r4 + rf # полное значение функции подкрепления
 				return r
 		elif reward_type == RewardType.PID_LIKE:
 			k = reward_config.get('k', 10)
@@ -228,7 +233,7 @@ class ControllerEnv(gym.Env):
 		return self.state_box
 
 
-	def apply_rew_config(self, rew_config:dict):
+	def set_rew_config(self, rew_config:dict):
 		ControllerEnv.get_reward = self._get_reward_def(self.reward_type, rew_config)
 
 
