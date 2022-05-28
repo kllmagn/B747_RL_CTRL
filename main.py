@@ -137,8 +137,8 @@ if __name__ == '__main__':
 
     if train:
         for model_name, env_train in envs_train.items():
-            def tf_custom_recorder(agent:ControllerAgent):
-                return CustomTransferProcessRecorder(
+            def control_test(agent:ControllerAgent):
+                return ControlTestCallback(
                     net_class=agent.net_class,
                     env_gen=envs_test[model_name],
                     vartheta_ref=ref_values,
@@ -149,7 +149,7 @@ if __name__ == '__main__':
                     window_length=30,
                     verbose=1,
                 )
-            callbs = [tf_custom_recorder] #, save_best_rew_callback]
+            callbs = [control_test] #, save_best_rew_callback]
             agent = ControllerAgent(net_class=net_class, use_tb=use_tb, model_name=model_name)
             agent.train(env_train, train_timesteps, callbacks_init=callbs, log_interval=int(log_interval/5), optimize=optimize, preload=preload, reward_config=reward_config, verbose=verbose)
     else:

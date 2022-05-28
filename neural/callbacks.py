@@ -43,9 +43,9 @@ class ProgressBarManager(object):
 		self.pbar.close()
 			
 
-class CustomTransferProcessRecorder(BaseCallback):
+class ControlTestCallback(BaseCallback):
 	def __init__(self, net_class, env_gen, vartheta_ref:Union[float, List[float]], state0:list, log_interval:int, filename:str, log_dir:str, window_length:int=30, verbose=0):
-		super(CustomTransferProcessRecorder, self).__init__(verbose)
+		super(ControlTestCallback, self).__init__(verbose)
 		self.n_episodes = self.n_episodes_b = 0
 		self.vartheta_ref = vartheta_ref if type(vartheta_ref) is list else [vartheta_ref]
 		self.state0 = state0
@@ -117,29 +117,6 @@ class CustomTransferProcessRecorder(BaseCallback):
 					if self.verbose > 0:
 						print(f"Saving new best model to {self.save_path}")
 					self.test_model.save(self.save_path)
-		return True
-
-				
-class TransferProcessRecorder(BaseCallback):
-	def __init__(self, verbose=0):
-		super(TransferProcessRecorder, self).__init__(verbose)
-		self.n_episodes = self.n_episodes_b = 0
-
-	def _on_step(self) -> bool:
-		assert "dones" in self.locals, "`dones` variable is not defined, please check your code next to `callback.on_step()`"
-		self.n_episodes_b = self.n_episodes
-		self.n_episodes += np.sum(self.locals["dones"]).item()
-		if (self.n_episodes != self.n_episodes_b):
-			ctrl = self.training_env.get_attr('ctrl')[0]
-			info = ctrl.stepinfo_SS(use_backup=True)
-			time, overshoot = info['settling_time'], info['overshoot']
-			if time is None or overshoot is None:
-				tf_err = np.inf
-			else:
-				tf_err = time*abs(overshoot)
-			self.logger.record('transfer/settling_time', time)
-			self.logger.record('transfer/overshoot', abs(overshoot))
-			self.logger.record('transfer/quality', 1/(1+tf_err))
 		return True
 
 

@@ -114,7 +114,7 @@ class ControllerAgent:
                 self.model = self.net_class('MlpPolicy', env, verbose=0, **hp) # создаем модель
             else:
                 self.model.set_env(env)
-            tf_custom_recorder = CustomTransferProcessRecorder(
+            control_test = ControlTestCallback(
                     net_class=self.net_class,
                     env_gen=env_init_func_patched,
                     vartheta_ref=[5*pi/180, -5*pi/180, 10*pi/180, -10*pi/180],
@@ -127,12 +127,12 @@ class ControllerAgent:
                 )
             if verbose > 0:
                 with ProgressBarManager(training_timesteps) as callback:
-                    cb_list = CallbackList([callback, tf_custom_recorder])
+                    cb_list = CallbackList([callback, control_test])
                     self.model.learn(total_timesteps=training_timesteps, callback=cb_list)
             else:
-                self.model.learn(total_timesteps=training_timesteps, callback=CallbackList([tf_custom_recorder]))
+                self.model.learn(total_timesteps=training_timesteps, callback=CallbackList([control_test]))
             self.model = self.net_class.load(os.path.join(savebest_dir, self.bm_name))
-            return tf_custom_recorder.mean_quality
+            return control_test.mean_quality
 
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=500, callbacks=[save_model_callback], catch=(ValueError,))
