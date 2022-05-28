@@ -12,30 +12,28 @@ from typing import Callable, Union
 import numpy as np
 
 class CtrlType(Enum):
+    '''Конфигурация контура управления ЛА.'''
     FULL_AUTO = 0 # СУ ПИД + СС ПИД
     AUTO = 1 # СС ПИД
     SEMI_MANUAL = 2 # СУ ПИД + СС НС
     MANUAL = 3 # СС НС
 
 class CtrlMode(Enum):
+    '''Метод управления с помощью НС-регулятора.'''
     DIRECT_CONTROL = 0 # прямой режим управления
     ADD_PROC_CONTROL = 1 # режим относительной компенсирующей добавки
     ANG_VEL_CONTROL = 2 # управление по производной управляющего сигнала
     ADD_DIRECT_CONTROL = 3 # режим прямой компенсирующей добавки
 
 class ResetRefMode(Enum):
+    '''Метод инициализации требуемых значений.'''
     CONST = 0 # Метод постоянного угла тангажа 
     OSCILLATING = 1 # Колебательная зависимость угла тангажа
     HYBRID = 2 # Гибридный метод
 
 class DisturbanceMode(Enum):
+    '''Тип возмущений при моделировании.'''
     AERO_DISTURBANCE = 0 # Погрешности а/д коэффициентов в виде шума
-
-class AeroComponent(Enum):
-    CXA = 0
-    CYA = 1
-    MZ = 2
-    MZ_DELTAZ = 3
 
 
 class Controller:

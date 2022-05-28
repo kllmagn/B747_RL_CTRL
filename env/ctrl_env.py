@@ -10,10 +10,11 @@ from math import exp, pi
 from gym import spaces
 from enum import Enum
 
-from tools.general import calc_exp_k, calc_stepinfo
+from tools.general import calc_exp_k
 
 
 class ObservationType(Enum):
+	'''Тип вектора состояния среды.'''
 	PID_LIKE = 0 # метод подобия
 	SPEED_MODE = 1 # учет скоростного режима
 	PID_AERO = 2
@@ -21,6 +22,7 @@ class ObservationType(Enum):
 	MODEL_STATE = 4
 
 class RewardType(Enum):
+	'''Тип функции подкрепления среды.'''
 	CLASSIC = 0
 	PID_LIKE = 1
 	QUALITY = 2

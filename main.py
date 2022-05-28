@@ -1,10 +1,8 @@
 from stable_baselines3 import A2C
-from core.controller import DisturbanceMode, ResetRefMode, CtrlType, CtrlMode
+from core.controller import ResetRefMode, CtrlType, CtrlMode
 from neural.agent import *
 
 from math import pi
-
-from neural.setups import TrainPlotter
 
 ctrl_mode_max = {
     CtrlMode.DIRECT_CONTROL: 17*pi/180,
