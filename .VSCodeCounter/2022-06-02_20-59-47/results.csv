@@ -1,0 +1,18 @@
+"filename", "language", "Python", "pip requirements", "comment", "blank", "total"
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\__init__.py", "Python", 0, 0, 0, 1, 1
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\controller.py", "Python", 287, 0, 13, 69, 369
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\model.py", "Python", 230, 0, 12, 40, 282
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\rtwtypes.py", "Python", 76, 0, 19, 24, 119
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\env\__init__.py", "Python", 0, 0, 0, 1, 1
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\env\ctrl_env.py", "Python", 240, 0, 6, 37, 283
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\main.py", "Python", 138, 0, 6, 12, 156
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\__init__.py", "Python", 0, 0, 0, 1, 1
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\agent.py", "Python", 363, 0, 5, 54, 422
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\callbacks.py", "Python", 210, 0, 21, 34, 265
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\setups.py", "Python", 202, 0, 23, 12, 237
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\requirements.txt", "pip requirements", 0, 171, 0, 1, 172
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\test.py", "Python", 62, 0, 3, 9, 74
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\__init__.py", "Python", 0, 0, 0, 1, 1
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\general.py", "Python", 251, 0, 3, 53, 307
+"c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\tb_convert.py", "Python", 38, 0, 20, 9, 67
+"Total", "-", 2097, 171, 131, 358, 2757

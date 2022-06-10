@@ -78,11 +78,17 @@ def generate_signal(ref_name:str, param_type, getter_filter:typing.Union[typing.
     return signal
 
 
-class Model:
+class ModelLogger():
+    @property
+    def logger(self):
+        return logging.Logger(f"[Model]", logging.INFO)
+
+
+class Model(ModelLogger):
     def __init__(self, model="model_simple", use_PID_SS:bool=True, use_PID_CS:bool=True, initial_state:np.ndarray=None, logging_path="model.log", use_RP:bool=True):
         model_id = str(uuid.uuid4())
         log_level = logging.INFO
-        self.logger = logging.Logger(f"[Model_{model_id}]", log_level)
+        #self.logger = logging.Logger(f"[Model_{model_id}]", log_level)
         if logging_path:
             fh = logging.FileHandler(logging_path, 'a+', encoding='utf-8')
             fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))

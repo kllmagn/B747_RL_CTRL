@@ -35,8 +35,12 @@ class DisturbanceMode(Enum):
     '''Тип возмущений при моделировании.'''
     AERO_DISTURBANCE = 0 # Погрешности а/д коэффициентов в виде шума
 
+class CtrlLogger():
+    @property
+    def logger(self):
+        return logging.Logger(f"[Controller]", logging.DEBUG)
 
-class Controller:
+class Controller(CtrlLogger):
     '''
     Управляющий контроллер MATLAB модели.\n
 
@@ -84,7 +88,7 @@ class Controller:
         ):
         '''Создать объект контроллера.'''
 
-        self.logger = logging.Logger(f"[Controller]", logging.DEBUG)
+        #self.logger = logging.Logger(f"[Controller]", logging.DEBUG)
         if logging_path:
             fh = logging.FileHandler(logging_path, 'w', encoding='utf-8')
             fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))

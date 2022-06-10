@@ -1,0 +1,45 @@
+Date : 2022-06-02 20:59:47
+Directory : c:\Users\roman\OneDrive\DIPLOM\model\pymodel
+Total : 16 files,  2268 codes, 131 comments, 358 blanks, all 2757 lines
+
+Languages
++------------------+------------+------------+------------+------------+------------+
+| language         | files      | code       | comment    | blank      | total      |
++------------------+------------+------------+------------+------------+------------+
+| Python           |         15 |      2,097 |        131 |        357 |      2,585 |
+| pip requirements |          1 |        171 |          0 |          1 |        172 |
++------------------+------------+------------+------------+------------+------------+
+
+Directories
++------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                             | files      | code       | comment    | blank      | total      |
++------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                |         16 |      2,268 |        131 |        358 |      2,757 |
+| core                                                             |          4 |        593 |         44 |        134 |        771 |
+| env                                                              |          2 |        240 |          6 |         38 |        284 |
+| neural                                                           |          4 |        775 |         49 |        101 |        925 |
+| tools                                                            |          3 |        289 |         23 |         63 |        375 |
++------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| filename                                                         | language         | code       | comment    | blank      | total      |
++------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\__init__.py    | Python           |          0 |          0 |          1 |          1 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\controller.py  | Python           |        287 |         13 |         69 |        369 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\model.py       | Python           |        230 |         12 |         40 |        282 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\core\rtwtypes.py    | Python           |         76 |         19 |         24 |        119 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\env\__init__.py     | Python           |          0 |          0 |          1 |          1 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\env\ctrl_env.py     | Python           |        240 |          6 |         37 |        283 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\main.py             | Python           |        138 |          6 |         12 |        156 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\__init__.py  | Python           |          0 |          0 |          1 |          1 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\agent.py     | Python           |        363 |          5 |         54 |        422 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\callbacks.py | Python           |        210 |         21 |         34 |        265 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\neural\setups.py    | Python           |        202 |         23 |         12 |        237 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\requirements.txt    | pip requirements |        171 |          0 |          1 |        172 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\test.py             | Python           |         62 |          3 |          9 |         74 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\__init__.py   | Python           |          0 |          0 |          1 |          1 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\general.py    | Python           |        251 |          3 |         53 |        307 |
+| c:\Users\roman\OneDrive\DIPLOM\model\pymodel\tools\tb_convert.py | Python           |         38 |         20 |          9 |         67 |
+| Total                                                            |                  |      2,268 |        131 |        358 |      2,757 |
++------------------------------------------------------------------+------------------+------------+------------+------------+------------+

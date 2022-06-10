@@ -65,3 +65,4 @@ if __name__ == "__main__":
 
     df = convert_tb_data(dir_path, ignore_runs=["AERO_DISTURBANCE"])
     write_dataframe(df, output_path)
+    write_dataframe(df, 'tensorboard_big.xlsx', bigMode=True)

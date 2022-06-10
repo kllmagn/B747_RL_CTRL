@@ -7,11 +7,11 @@ from math import pi
 ctrl_mode_max = {
     CtrlMode.DIRECT_CONTROL: 17*pi/180,
     CtrlMode.ANG_VEL_CONTROL: 2*pi/180,
-    CtrlMode.ADD_PROC_CONTROL: 0.7,
+    CtrlMode.ADD_PROC_CONTROL: 1.0,
     CtrlMode.ADD_DIRECT_CONTROL: 10*pi/180,
 }
 
-net_class = A2C
+net_class = PPO
 norm_obs = True
 norm_act = True
 aero_err_test = np.array([-0.1, 0.1, -0.1, -0.1, 0.1])
@@ -104,8 +104,8 @@ if __name__ == '__main__':
         #np.array([-6.4344, -1.2133, -7.731, 258.0826]), #650.4214]), # overshoot = 7,81 tuned, 7,143801 - actual?
     ]
 
-    train = True
-    train_timesteps = 300000
+    train = False
+    train_timesteps = 500000
     optimize = False
     verbose = 1
     preload = False
@@ -149,7 +149,7 @@ if __name__ == '__main__':
                 )
             callbs = [control_test] #, save_best_rew_callback]
             agent = ControllerAgent(net_class=net_class, use_tb=use_tb, model_name=model_name)
-            agent.train(env_train, train_timesteps, callbacks_init=callbs, log_interval=int(log_interval/5), optimize=optimize, preload=preload, reward_config=reward_config, verbose=verbose)
+            agent.train(env_train, train_timesteps, callbacks_init=callbs, log_interval=1, optimize=optimize, preload=preload, reward_config=reward_config, verbose=verbose)
     else:
         model_name = "COLLECTIVE_TEST" if len(envs_test) > 1 else list(envs_test.keys())[0]
         agent = ControllerAgent(net_class=net_class, use_tb=use_tb, model_name=model_name)

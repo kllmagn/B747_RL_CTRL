@@ -82,7 +82,7 @@ class ControllerEnv(gym.Env):
 		self.norm_obs = norm_obs
 		self.norm_act = norm_act
 
-		ControllerEnv.get_reward = self._get_reward_def(self.reward_type)
+		ControllerEnv.get_reward, self.reward_range = self._get_reward_def(self.reward_type)
 		ControllerEnv._get_obs_raw = self._create_obs()
 		ControllerEnv._get_obs_def = self._create_obs_def()
 
@@ -103,50 +103,56 @@ class ControllerEnv(gym.Env):
 			self.observation_space = spaces.Box(low=obs_low, high=obs_high, shape=obs_low.shape)
 		self.state_box = np.zeros(self.observation_space.shape)
 
+		self.reset()
 
-	def _get_reward_def(self, reward_type:RewardType, reward_config:dict={}) -> Callable[['ControllerEnv', np.ndarray], float]:
+
+	def _get_reward_def(self, reward_type:RewardType, reward_config:dict={}) -> Tuple[Callable[['ControllerEnv', np.ndarray], float], Tuple[float, float]]:
 		'''Получить определение функции награды среды.'''
 		if reward_type == RewardType.CLASSIC:
 			k1, k2, k3 = reward_config.get('k1', 2), reward_config.get('k2', 2), reward_config.get('k3', 1)
-			k0 = calc_exp_k(0.8, 0.3) #reward_config.get('k0', 2) #2+self.ctrl.model.time # раньше был 1
 			kf = reward_config.get('kf', 0.1)
-			kITSE = reward_config.get('kITSE', 6)
+			kITSE = reward_config.get('kITSE', 0.3)
 			kt = calc_exp_k(0.8, 10)
 			ko = calc_exp_k(0.75, 0.15)
+			k0 = reward_config.get('k0', 2) # ko/k1 #2+self.ctrl.model.time # раньше был 1
 			s = k1 + k2 + k3
 			k1 /= s
 			k2 /= s
 			k3 /= s
 			k2_0 = 1 #1/(1+0.5*abs(self.ctrl.model.dvartheta)/abs(2*vf))
+			r10, r20, r30, r40 = 0.50, 0.20, 0.20, 0.1
 			def rew(self:ControllerEnv, action:np.ndarray) -> float:
 				vf = self.ctrl.vartheta_ref if self.ctrl.vartheta_ref else self.ctrl.vartheta_max # требуемое значение угла тангажа
 				# компонент ошибки стабилизации
-				r1 = 0.1*exp(-k0*(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(vf)) 
+				r1 = r10*exp(-k0*(k1*abs(self.ctrl.model.dvartheta)+k2*k2_0*abs(self.ctrl.model.dvartheta_dt)+k3*abs(self.ctrl.model.dvartheta_dt_dt))/abs(vf)) 
 				# компонент перерегулирования
 				if self.ctrl.vartheta_ref*self.ctrl.model.dvartheta < 0: # если перерегулирование сверху
-					r2 = 0.1*exp(-ko*abs(self.ctrl.model.dvartheta/vf)) # чем больше перерегулирование сверху, тем меньше награда
+					r2 = r20*exp(-ko*abs(self.ctrl.model.dvartheta/vf)) # чем больше перерегулирование сверху, тем меньше награда
 				else:
-					r2 = 0.1
+					r2 = r20
 				# компонент времени ПП
 				if abs(self.ctrl.model.dvartheta/vf) > 0.05: # если процесс вышел за допустимые пределы по времени ПП
-					r3 = 0.1*exp(-kt*self.ctrl.model.time) # чем дольше идет процесс, тем меньше награда
+					r3 = r30*exp(-kt*self.ctrl.model.time) # чем дольше идет процесс, тем меньше награда
 				else:
-					r3 = 0.1
+					r3 = r30
 				# компонент интегральной временной квадратичной ошибки ПП
-				r4 = 0.7*exp(-kITSE*self.ctrl.model.ITSE/(20*vf**2))
+				r4 = r40*exp(-kITSE*self.ctrl.model.ITSE/(vf**2))
 				# формирующий компонент
-				rf = -kf*abs(self.ctrl.model.dvartheta/(2*vf))*(abs(action[0]-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
+				rf = -kf*abs(self.ctrl.model.dvartheta/(2*vf))*(abs(self.ctrl.model.deltaz-self.ctrl.model.deltaz_ref))/(34*pi/180) if self.ctrl.ctrl_mode == CtrlMode.DIRECT_CONTROL else 0
 				r = r1 + r2 + r3 + r4 + rf # полное значение функции подкрепления
 				return r
+			scale = (0, 1)
 		elif reward_type == RewardType.PID_LIKE:
 			k = reward_config.get('k', 10)
 			def rew(self:ControllerEnv, _:np.ndarray):
 				r = exp(-k*abs(self.ctrl.model.deltaz_com-self.ctrl.model.deltaz_ref)/(34*pi/180))
 				return r
+			scale = (0, 1)
 		elif reward_type == RewardType.QUALITY:
 			def rew(self:ControllerEnv, _:np.ndarray):
 				r = self.ctrl.quality()
 				return r
+			scale = (0, 1)
 		elif reward_type == RewardType.MINIMAL:
 			rmax = reward_config.get('rmax', 0.2)
 			Qmax = 1 #-rmax
@@ -166,6 +172,7 @@ class ControllerEnv(gym.Env):
 				r = rmax*kovershoot*ktp
 				R = Q # + r
 				return R
+			scale = (0, 1)
 		elif reward_type == RewardType.TF_REFERENCE:
 			overshoot_ref = reward_config.get('overshoot_ref', 2)
 			tp_ref = reward_config.get('tp_ref', 5)
@@ -179,9 +186,10 @@ class ControllerEnv(gym.Env):
 					tp = self.ctrl.model.time
 				r = exp(-k*abs(overshoot-overshoot_ref)*abs(tp_ref-tp))
 				return r
+			scale = (0, 1)
 		else:
 			raise ValueError("Неподдерживаемый тип функции подкрепления: ", reward_type)
-		return rew
+		return rew, scale
 
 
 	def _get_action_def(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -241,7 +249,7 @@ class ControllerEnv(gym.Env):
 
 	def set_rew_config(self, rew_config:dict):
 		'''Установить конфигурацию функции подкрепления среды.'''
-		ControllerEnv.get_reward = self._get_reward_def(self.reward_type, rew_config)
+		ControllerEnv.get_reward, self.reward_range = self._get_reward_def(self.reward_type, rew_config)
 
 
 	def is_done(self):

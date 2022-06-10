@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 from typing import Union
 import matplotlib.pyplot as plt
 import math
 
 from openpyxl import Workbook, load_workbook
+import openpyxl.drawing
 from openpyxl.chart.axis import ChartLines
 from openpyxl.chart import (
     ScatterChart,
@@ -11,7 +13,10 @@ from openpyxl.chart import (
     Series,
 )
 from openpyxl.utils.units import points_to_pixels, pixels_to_EMU
-from openpyxl.drawing.line import LineProperties
+from openpyxl.drawing.line import LineProperties, LineEndProperties
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties, Font
 
 import pandas as pd
 
@@ -138,6 +143,31 @@ label_units = {
     't': 'с',
 }
 
+lineColors = [
+    'ff0000', # красный
+    'ff00d5', # розовый
+    '4000ff', # синий
+    '00fbff', # голубой
+    '7f18c4', # фиолетовый
+    '00ff37', # светло-зеленый
+    'e6ff00', # желтый
+    'ff7b00', # оранжевый
+    '707070', # серый 
+    'e875ff', # лиловый
+    'ffc875', # типа персиковый
+    'ffa6a6', # светло-розовый
+    '000000', # черный \/
+    '4a3d29', # коричневый \/
+    '695c0e', # цвет детской неожиданности \/
+    '100a38', # темно-синий \/
+    '7d1d02', # бардовый \/
+    '064720', # темно-зеленый \/
+]
+
+lineDashStyles = [
+    None,
+    'sysDot'
+]
 
 def comp_begin(label:str, target:str) -> bool:
     return len(label) >= len(target) and label[:len(target)] == target
@@ -154,24 +184,24 @@ def get_model_name_desc(model_name:str) -> str:
     description = ""
     method_to_name_mapping = {
         'obs': {
-            "SPEED_MODE": "ПОДОБ-СКОР",
-            "PID_SPEED_AERO": "ПОДОБ-СКОР-АД",
-            'PID_LIKE': "ПОДОБ",
+            "SPEED_MODE": "ПСР",
+            "PID_SPEED_AERO": "ПСРА",
+            'PID_LIKE': "Подобие",
         },
         'ctrl_mode':
         {
             "ADD_DIRECT_CONTROL": "ПКД",
             "ADD_PROC_CONTROL": "ОКД",
-            "DIRECT_CONTROL": "ПМУ",
+            "DIRECT_CONTROL": "ПУ",
         },
         'reset_ref_modes': {
-            "CONST": "ПУТ",
-            "OSCILLATING": "ОУТ",
-            "HYBRID": "ГМ",
+            "CONST": "ПТУ",
+            "OSCILLATING": "ОЗУ",
+            "HYBRID": "ГИ",
         },
         'disturbance':
         {
-            'AERO_DISTURBANCE': "АД-ПОГР"
+            'AERO_DISTURBANCE': "Погрешность а/д"
         }
     }
     for mapping in method_to_name_mapping.values():
@@ -185,39 +215,78 @@ def get_model_name_desc(model_name:str) -> str:
     return description
 
 
-def get_label_desc(label:str) -> str:
+def get_label_desc(label:str, index:int=None) -> str:
     if comp_begin(label, 'vartheta_ref'):
         return "Требуемый угол тангажа"
     elif comp_begin(label, "hzh"):
         return "Требуемая высота полета"
     elif model_separator not in label:
         return "СС ПИД"
+    elif index is not None:
+        return f'Конфигурация {index}'
     return get_model_name_desc(label)
 
 
-def write_dataframe(data:pd.DataFrame, filename:str):
+def write_dataframe(data:pd.DataFrame, filename:str, bigMode=False):
     writer = pd.ExcelWriter(filename)
     data.to_excel(writer, index=True, header=True, sheet_name="data")
+
     ws = writer.sheets['data']
 
-    def write_chart(labels:list, pos:str):
+    def gather_styles(labels:list) -> dict:
+        styles = []
+        for i in range(len(lineColors)):
+            for j in range(len(lineDashStyles)):
+                styles.append({'color': lineColors[i], 'dashStyle': lineDashStyles[j]})
+        info = {}
+        for i in range(len(labels)):
+            label = labels[i]
+            info[label] = styles[i]
+        return info
+
+    def write_chart(labels:list, pos:str, wide_mode=True):
+        styles = gather_styles(labels)
         chart = ScatterChart()
-        #chart.title = labels[0]
-        #chart.style = 13
+        fontName, fontSize = 'Times New Roman', (4000 if bigMode else 1400)
+        font = Font(typeface=fontName)
+        size = fontSize # 20 point size
+        cp = CharacterProperties(latin=font, sz=size, b=False) # Try bold text
+        pp = ParagraphProperties(defRPr=cp)
+        rtp = RichText(p=[Paragraph(pPr=pp, endParaRPr=cp)])
+        def formAxis(axis):
+            width=points_to_pixels(7 if bigMode else 2)
+            width=pixels_to_EMU(width)
+            lineProp = LineProperties(w=width, solidFill = '000000', tailEnd=LineEndProperties(type='arrow', len='med'))
+            prop = GraphicalProperties(ln=lineProp)
+            axis.spPr = prop
+            return axis
         chart.x_axis.title = data.index.name
         chart.x_axis.minorGridlines = ChartLines()
-        chart.y_axis.minorGridlines = ChartLines()
+        chart.x_axis.txPr = rtp
         name = labels[0]
         chart.y_axis.title = name.split(model_separator)[0] if model_separator in name else name
+        chart.y_axis.minorGridlines = ChartLines()
+        chart.y_axis.txPr = rtp
+        chart.x_axis, chart.y_axis = formAxis(chart.x_axis), formAxis(chart.y_axis)
+        chart.x_axis.title.tx.rich.p[0].r[0].rPr = chart.y_axis.title.tx.rich.p[0].r[0].rPr = cp
         chart.legend.position = 'b'
+        chart.legend.textProperties = rtp
         time = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-        for label in labels:
+        for i in range(len(labels)):
+            label = labels[i]
+            style = styles[label]
             values = Reference(ws, min_col=data.columns.get_loc(label)+2, min_row=2, max_row=ws.max_row)
-            series = Series(values, time, title_from_data=False, title=get_label_desc(label))
-            width=points_to_pixels(8)
-            width=pixels_to_EMU(width)
-            lineProp = LineProperties(w=width)
-            series.graphicalProperties.line = lineProp   
+            series = Series(values, time, title_from_data=False, title=get_label_desc(label, index=i+1))
+            if wide_mode:
+                width=points_to_pixels(7 if bigMode else 2)
+                width=pixels_to_EMU(width)
+                lineProp = LineProperties(solidFill = style['color'], w=width)
+            else:
+                lineProp = LineProperties(solidFill = style['color'])
+            series.graphicalProperties.line = lineProp
+            dashStyle = style['dashStyle']
+            if dashStyle:
+                series.graphicalProperties.line.dashStyle = dashStyle
             series.smooth = True
             chart.series.append(series)
         ws.add_chart(chart, pos)
@@ -274,7 +343,7 @@ class Storage:
             plt.ylabel(ylabel)
         plt.show()
 
-    def save(self, filename='storage.xls', base=None):
+    def save(self, filename='storage.xlsx', base=None):
         print(f"Сохраняю хранилище в {filename}")
         if len(self.storage) == 0:
             raise ValueError("Невозможно сохранить хранилище: пустое хранилище")
@@ -299,6 +368,9 @@ class Storage:
         if base and base in self.storage:
             data.set_index(place_unit(base), inplace=True)
         write_dataframe(data, filename)
+        path = Path(filename)
+        bigPath = os.path.dirname(path)/(path.stem+'_big'+path.suffix)
+        write_dataframe(data, bigPath, bigMode=True)
 
     def set_suffix(self, suffix:str):
         self.storage = {f'{k}{model_separator}{suffix}': v for k, v in self.storage.items()}
