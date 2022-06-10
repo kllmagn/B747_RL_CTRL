@@ -5,3 +5,4 @@ __pycache__
 .old_logs
 .output
 core/tmp_models
+*.log

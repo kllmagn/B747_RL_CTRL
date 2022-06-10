@@ -4,7 +4,7 @@ from tools.general import *
 
 from .model import Model
 
-from math import pi, sin
+from math import exp, pi, sin
 import random
 from enum import Enum
 from typing import Callable, Union
@@ -12,33 +12,35 @@ from typing import Callable, Union
 import numpy as np
 
 class CtrlType(Enum):
+    '''Конфигурация контура управления ЛА.'''
     FULL_AUTO = 0 # СУ ПИД + СС ПИД
     AUTO = 1 # СС ПИД
     SEMI_MANUAL = 2 # СУ ПИД + СС НС
     MANUAL = 3 # СС НС
 
 class CtrlMode(Enum):
+    '''Метод управления с помощью НС-регулятора.'''
     DIRECT_CONTROL = 0 # прямой режим управления
     ADD_PROC_CONTROL = 1 # режим относительной компенсирующей добавки
     ANG_VEL_CONTROL = 2 # управление по производной управляющего сигнала
     ADD_DIRECT_CONTROL = 3 # режим прямой компенсирующей добавки
 
 class ResetRefMode(Enum):
+    '''Метод инициализации требуемых значений.'''
     CONST = 0 # Метод постоянного угла тангажа 
     OSCILLATING = 1 # Колебательная зависимость угла тангажа
     HYBRID = 2 # Гибридный метод
 
 class DisturbanceMode(Enum):
-    AERO = 0 # Погрешности а/д коэффициентов в виде шума
+    '''Тип возмущений при моделировании.'''
+    AERO_DISTURBANCE = 0 # Погрешности а/д коэффициентов в виде шума
 
-class AeroComponent(Enum):
-    CXA = 0
-    CYA = 1
-    MZ = 2
-    MZ_DELTAZ = 3
+class CtrlLogger():
+    @property
+    def logger(self):
+        return logging.Logger(f"[Controller]", logging.DEBUG)
 
-
-class Controller:
+class Controller(CtrlLogger):
     '''
     Управляющий контроллер MATLAB модели.\n
 
@@ -86,7 +88,7 @@ class Controller:
         ):
         '''Создать объект контроллера.'''
 
-        self.logger = logging.Logger(f"[Controller]", logging.DEBUG)
+        #self.logger = logging.Logger(f"[Controller]", logging.DEBUG)
         if logging_path:
             fh = logging.FileHandler(logging_path, 'w', encoding='utf-8')
             fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -147,9 +149,10 @@ class Controller:
             Vx = random.uniform(100, 265)
             Vy = random.uniform(-20, 20)
             wz0 = random.uniform(-0.001, 0.001)
-            vartheta0 = random.uniform(-self.vartheta_max, self.vartheta_max)
+            vartheta0 = 0 #random.uniform(-self.vartheta_max, self.vartheta_max)
             if self.reset_ref_mode == ResetRefMode.CONST:
-                vartheta_ref = random.uniform(-self.vartheta_max, self.vartheta_max)
+                vartheta_ref = random.uniform(-self.vartheta_max, -1*pi/180)
+                vartheta_ref *= random.choice([1.0, -1.0])
                 self.vartheta_func = lambda _: vartheta_ref
             elif self.reset_ref_mode == ResetRefMode.OSCILLATING:
                 # 0.01 Гц, 0.5 Гц | -10*pi/180<=A<=10*pi/180 | sin
@@ -175,10 +178,17 @@ class Controller:
                 self._init_model()
             self.model.set_initial([0, h0, Vx, Vy, vartheta0, wz0])
 
-        if self.disturbance_mode == DisturbanceMode.AERO:
+        if self.disturbance_mode == DisturbanceMode.AERO_DISTURBANCE:
             self.logger.debug("[_pre_step] Выставляю случайную ошибку в а/д коэффициентах")
             if self.aero_err is None:
-                self.model.aero_err = np.random.normal(0, 0.7, size=(5,))
+                self.model.aero_err =\
+                    np.array([
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(0.1, 0.5, size=None),
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(-0.1, 0.5, size=None),
+                        np.random.normal(0.1, 0.5, size=None),
+                    ])
             else:
                 self.model.aero_err = self.aero_err
 
@@ -191,25 +201,27 @@ class Controller:
         self.model.initialize()
 
 
-    def _pre_step(self, state=None):
+    def _pre_step(self, action:np.ndarray, state=None):
         '''Выполнить действия перед шагом интегрирования.'''
         pass
 
 
-    def _post_step(self, state=None):
+    def _post_step(self, action:np.ndarray, state=None):
         '''Выполнить действия после шага интегрирования.'''
         if self.use_storage:
             self.logger.debug("[_post_step] Запись параметров в хранилище")
             # используется режим записи состояния модели
             self.storage.record("t", self.model.time)
-            self.storage.record('deltaz', self.model.deltaz_com*180/pi)
-            self.storage.record('deltaz_ref', self.model.deltaz_ref*180/pi)
-            self.storage.record('deltaz_real', self.model.deltaz_real*180/pi)
+            self.storage.record('U_com', self.model.deltaz_com)
+            self.storage.record('U_PID', self.model.deltaz_ref)
+            self.storage.record('deltaz', self.model.deltaz_real*180/pi)
             self.storage.record('hzh', self.model.hzh)
             self.storage.record('vartheta_ref', self.vartheta_ref*180/pi)
+            if action is not None:
+                self.storage.record('U_RL', action[0])
             if state is None:
                 state = self.model.state_dict
-            angles = ['alpha', 'vartheta', 'psi', 'gamma']
+            angles = ['vartheta']
             for k, v in state.items():
                 if k in angles:
                     v *= 180/pi
@@ -225,7 +237,6 @@ class Controller:
         else: # если СУ ПИД в составе контура
             # выставляем требуемую высоту в соответствии с функцией
             self.model.hzh = self.h_func(self.model.time)
-            self.model.vartheta_zh = action[0]
         if not self.model.use_PID_SS: # если СС ПИД НЕ в составе контура
             if self.ctrl_mode is None or self.ctrl_mode == CtrlMode.DIRECT_CONTROL:
                 self.model.deltaz = action[-1]
@@ -243,14 +254,14 @@ class Controller:
         # ===========================================================
         # производим резервное копирование вектора состояния мат. модели
         self.state_backup = self.model.state
-        self._pre_step() # выполняем операции перед шагом интегрирования
+        self._pre_step(action) # выполняем операции перед шагом интегрирования
         self.model.step() # производим симуляцию модели на один шаг
-        self._post_step() # выполняем операции после шага интегрирования
+        self._post_step(action) # выполняем операции после шага интегрирования
         # выполняем интегрирование до тех пор пока не будет достигнут шаг взаимодействия
         while ((round(round(self.model.time/self.model.dt) % round(self.sample_time/self.model.dt))) != 0):
-            self._pre_step()
+            self._pre_step(action)
             self.model.step()
-            self._post_step()
+            self._post_step(action)
 
 
     @property
@@ -318,6 +329,19 @@ class Controller:
         '''Вычисление ошибки СУ ЛА.'''
         h = self.model.state_dict['y']
         return calc_err(h, self.model.hzh)
+
+
+    def quality(self) -> float:
+        '''Показатель качества ПП.'''
+        quality = exp(-60*0.1*self.model.ITSE/(self.tk*self.vartheta_ref**2))
+        #quality = exp(-self.vartheta_max*self.model.IAE/self.vartheta_ref)
+        '''
+        info = self.stepinfo_SS()
+        tp = info['settling_time']
+        overshoot = info['overshoot']
+        quality = exp(-0.01*(abs(overshoot)+tp))
+        '''
+        return quality
 
 
     def stepinfo_SS(self, use_backup=False) -> dict:

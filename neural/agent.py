@@ -2,22 +2,12 @@ import os
 import copy
 from math import pi
 from pathlib import Path
-import random
 from threading import Thread
-from typing import Any, List, Union
+from typing import Any, Dict, List, Union
 
 import numpy as np
+import pandas as pd
 
-from stable_baselines3 import A2C, PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CallbackList
-from core.controller import CtrlType
-
-from tools.general import Storage
-
-from .callbacks import *
 from tensorboard import program
 
 from tqdm import tqdm
@@ -27,6 +17,15 @@ import optuna
 import onnx
 import onnxruntime as ort
 
+from stable_baselines3 import A2C, PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import CallbackList
+from core.controller import CtrlType
+
+from tools.general import get_model_name_desc
+from .callbacks import *
 from env.ctrl_env import *
 from .setups import hyperparams, trial_hyperparams, TrainPlotter
 
@@ -53,6 +52,10 @@ class ControllerAgent:
         else: # если класса нет, то используются гиперпараметры по умолчанию
             self.hp = {}
         self.model = None # выставляем объект модели нейросети как пустой
+        self._init_names(model_name)
+
+
+    def _init_names(self, model_name:str) -> None:
         self.model_name = model_name
         self.bm_name = f'{model_name}.zip' # выставляем имя файла модели
 
@@ -83,37 +86,56 @@ class ControllerAgent:
         return env.envs[0].env
 
 
-    def optimize(self, env_init_func:Callable[[],ControllerEnv], training_timesteps:int) -> None:
+    def optimize(self, env_init_func:Callable[[],ControllerEnv], training_timesteps:int, opt_hp=False, verbose:int=1) -> None:
         '''Оптимизировать нейросетевую модель.'''
         savebest_dir = os.path.join(self.log_dir, 'optimization') 
         def save_model_callback(study:optuna.Study, trial):
             '''Функция для сохранения в файл модели наилучшей итерации процесса оптимизации.'''
             if study.best_value >= trial.value:
                 load_path = os.path.join(self.log_dir, self.bm_name)
-                save_path = os.path.join(self.log_dir, 'optimization', self.bm_name)
+                save_path = os.path.join(savebest_dir, self.bm_name)
                 os.replace(save_path, load_path)
         def objective(trial:optuna.Trial):
-            hp = trial_hyperparams(self.net_class, trial, self.hp) # получем гиперпараметры сети для данной итерации
-            env = self._wrap_env(env_init_func, os.path.join(self.log_dir, 'optimization')) # оборачиваем среду в векторное представление
-            self.model = self.net_class('MlpPolicy', env, verbose=0, tensorboard_log=self.tb_log, **hp) # создаем модель
-            tf_custom_recorder = CustomTransferProcessRecorder(
-                env_gen=env_init_func,
-                vartheta_ref=5*pi/180,
-                state0=np.array([0, 11000, 250, 0, 0, 0]),
-                log_interval=5000,
-                filename=self.bm_name,
-                log_dir=savebest_dir,
-                window_length=5,
-                verbose=0)
-            with ProgressBarManager(training_timesteps) as callback:
-                cb_list = CallbackList([callback, tf_custom_recorder])
-                self.model.learn(total_timesteps=training_timesteps, callback=cb_list)
+            if opt_hp:
+                hp = trial_hyperparams(self.net_class, trial, self.hp) # получем гиперпараметры сети для данной итерации
+            else:
+                hp = self.hp
+            env = env_init_func()
+            reward_config = get_trial_rew_config(env.reward_type, trial)
+            del env
+            def env_init_func_patched() -> ControllerEnv:
+                env = env_init_func()
+                env.set_rew_config(reward_config)
+                return env
+            env = self._wrap_env(env_init_func_patched, os.path.join(self.log_dir, 'optimization')) # оборачиваем среду в векторное представление
+            if opt_hp or self.model is None:
+                self.model = self.net_class('MlpPolicy', env, verbose=0, **hp) # создаем модель
+            else:
+                self.model.set_env(env)
+            control_test = ControlTestCallback(
+                    net_class=self.net_class,
+                    env_gen=env_init_func_patched,
+                    vartheta_ref=[5*pi/180, -5*pi/180, 10*pi/180, -10*pi/180],
+                    state0=np.array([0, 11000, 250, 0, 0, 0]),
+                    log_interval=1000,
+                    filename=self.bm_name,
+                    log_dir=savebest_dir,
+                    window_length=30,
+                    verbose=verbose,
+                )
+            if verbose > 0:
+                with ProgressBarManager(training_timesteps) as callback:
+                    cb_list = CallbackList([callback, control_test])
+                    self.model.learn(total_timesteps=training_timesteps, callback=cb_list)
+            else:
+                self.model.learn(total_timesteps=training_timesteps, callback=CallbackList([control_test]))
             self.model = self.net_class.load(os.path.join(savebest_dir, self.bm_name))
-            return tf_custom_recorder.best_mean_quality
+            return control_test.mean_quality
 
-        study = optuna.create_study(direction="minimize")
+        study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=500, callbacks=[save_model_callback], catch=(ValueError,))
         print('Лучшие параметры:', study.best_params)
+        '''
         params = dict(study.best_params)
         params['policy_kwargs'] = dict(ortho_init=False, activation_fn=th.nn.Tanh, net_arch=[params[f'n{i+1}'] for i in range(params['n_depth'])])
         for i in range(params['n_depth']):
@@ -121,6 +143,7 @@ class ControllerAgent:
         del params['n_depth']
         self.hp = params
         print('Полученные гиперпараметры нейросетевой модели:', self.hp)
+        '''
 
 
     def train(
@@ -133,12 +156,17 @@ class ControllerAgent:
             log_interval:int=1000,
             show_plotter:bool=False,
             callbacks_init:List[Callable[[ControllerEnv], Any]]=[],
+            reward_config:dict={},
         ):
         '''Произвести обучение нейросетевой модели.'''
-        env = self._wrap_env(env_init_func) # оборачиваем объект в векторное представление
+        def env_init_func_patched() -> ControllerEnv:
+            env = env_init_func()
+            env.set_rew_config(reward_config)
+            return env
+        env = self._wrap_env(env_init_func_patched) # оборачиваем объект в векторное представление
         if optimize: # если производится предварительная оптимизация
             print('Оптимизирую с помощью Optuna')
-            self.optimize(env_init_func, timesteps) 
+            self.optimize(env_init_func, timesteps, verbose=verbose) 
             self.model = self.net_class.load(os.path.join(self.log_dir, self.bm_name), tensorboard_log=self.tb_log, verbose=verbose)
             self.model.set_env(env)
         else:
@@ -237,68 +265,148 @@ class ControllerAgent:
                 env.render()
 
 
-    def test(self, ref_values:List[float], env_init_func:Callable[[], ControllerEnv], state0:np.ndarray=None, plot=False, output_dir:Path=None) -> None:        
+    def test(
+        self,
+        ref_values:List[float],
+        env_init_func:Union[Dict[str, Callable[[], ControllerEnv]], Callable[[], ControllerEnv]],
+        state0:np.ndarray=None,
+        plot=False,
+        output_dir:Path=None,
+        collect=False,
+        no_neural=False,
+        pid_coefs:List[np.ndarray]=[],
+        ) -> None:
+               
         info = None
-        storage = None
-
-        def write_info(filepath:str, info:str) -> None:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(info)
+        tmp_storage = None
+        quality = None
 
         def callb(env:ControllerEnv) -> None:
-            nonlocal storage
+            nonlocal tmp_storage
             nonlocal info
-            storage = env.ctrl.storage
+            nonlocal quality
+            tmp_storage = env.ctrl.storage
             ctrl_obj = env.ctrl
             if ctrl_obj.use_ctrl:
                 info = ctrl_obj.stepinfo_CS()
             else:
                 info = ctrl_obj.stepinfo_SS()
-        
-        env = env_init_func() # создаем среду для тестирования
-        tk = env.ctrl.tk
-        num_interactions = int(tk/env.ctrl.sample_time)
-        env.ctrl.use_storage = True
-        
-        env_PID = env_init_func()
+            quality = ctrl_obj.quality()
+
+        def set_pid_coefs(env:ControllerEnv, coefs:np.ndarray) -> ControllerEnv:
+            if env.ctrl.use_ctrl:
+                env.ctrl.model.PID_CS = coefs
+            else:
+                env.ctrl.model.PID_SS = coefs
+            return env
+
+        env_inits = env_init_func if type(env_init_func) is dict else {self.model_name: env_init_func}
+
+        env_PID = env_inits[list(env_inits.keys())[0]]()
         env_PID.ctrl.ctrl_type = CtrlType.AUTO if (env_PID.ctrl.ctrl_type == CtrlType.MANUAL) else CtrlType.FULL_AUTO
         env_PID.ctrl.ctrl_mode = None
         env_PID.ctrl.use_storage = True
         env_PID.ctrl.sample_time = env_PID.ctrl.model.dt
         del env_PID.ctrl.model
         env_PID.ctrl._init_model()
+        tk = env_PID.ctrl.tk
+
+        model_name_backup = self.model_name
+        model_names = [] if no_neural else list(env_inits.keys())
+
+        datas = []
+        storages = {}
+
+        base_pid_name = "CУ ПИД" if env_PID.ctrl.use_ctrl else "СС ПИД"
+        def pid_name_index(i:int) -> str:
+            pid_index = f" [{i+1}]" if len(pid_coefs) > 1 else ""
+            name = f"{base_pid_name}{pid_index}"
+            return name
+
+        if len(pid_coefs) == 0:
+            pid_coefs = [env_PID.ctrl.model.PID_CS if env_PID.ctrl.use_ctrl else env_PID.ctrl.model.PID_SS]
 
         for ref_value in ref_values:
             print('='*60)
-            print(f"h = {ref_value} [м]" if env.ctrl.use_ctrl else f"vartheta = {ref_value*180/pi} [град]")
-            print(f'Расчет перехода с использованием нейросетевого регулятора [{"h_func" if env.ctrl.use_ctrl else "vartheta_func"}]')
-            self._test_env(ref_value, num_interactions, env, state0, manual=True, use_render=True, on_episode_end=callb)
-            storage1 = copy.deepcopy(storage)
-            info_neural = dict(info)
-            print("Характеристики ПП СС НС:", info_neural)
-            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+            storage = None
+            
+            data = pd.DataFrame(columns=['Устройство', 'σ, [%]', 'tпп, [с]', 'tв, [с]', f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}", 'Q, [-]'])
 
-            print(f'Расчет перехода с использованием ПИД-регулятора [{"h_func" if env_PID.ctrl.use_ctrl else "vartheta_func"}]')
-            num_pid_interactions = num_interactions*int(env.ctrl.sample_time/env.ctrl.model.dt)
-            self._test_env(ref_value, num_pid_interactions, env_PID, state0, manual=False, use_render=True, on_episode_end=callb)
-            storage2 = copy.deepcopy(storage)
-            info_pid = dict(info)
-            print("Характеристики ПП СС ПИД:", info_pid)
-            #print(f"Mean reward = {mean_reward} +/- {std_reward}")
+            for i in range(len(pid_coefs)):
+                coefs = pid_coefs[i]
 
-            storage2.merge(storage1, 'neural')
+                env_PID = set_pid_coefs(env_PID, coefs)
+                name = pid_name_index(i)
+            
+                print(f"h = {ref_value} [м]" if env_PID.ctrl.use_ctrl else f"vartheta = {ref_value*180/pi} [град]")
+
+                print(f'Расчет перехода с использованием ПИД-регулятора [{"h_func" if env_PID.ctrl.use_ctrl else "vartheta_func"}]')
+                num_pid_interactions = int(env_PID.ctrl.tk/env_PID.ctrl.model.dt)
+                self._test_env(ref_value, num_pid_interactions, env_PID, state0, manual=False, use_render=True, on_episode_end=callb)
+                if storage is None:
+                    storage = copy.deepcopy(tmp_storage)
+                    if len(pid_coefs) > 1:
+                        storage.set_suffix(name)
+                else:
+                    storage.merge(copy.deepcopy(tmp_storage), name)
+                info_pid = dict(info)
+                print(f"Характеристики ПП {name} | {coefs}:", info_pid)
+                data = data.append({'Устройство': name, 'σ, [%]': info_pid['overshoot'],\
+                    'tпп, [с]': info_pid['settling_time'], 'tв, [с]': info_pid['rise_time'],\
+                        f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}": info_pid['static_error'], 'Q, [-]': quality}, ignore_index=True)
+
+            for model_name, env_init in env_inits.items():
+                if no_neural:
+                    break
+                env = env_init() # создаем среду для тестирования
+                tk = env.ctrl.tk
+                num_interactions = int(tk/env.ctrl.sample_time)
+                env.ctrl.use_storage = True
+                self._init_names(model_name)
+
+                print(f'Расчет перехода с использованием нейросетевого регулятора [{"h_func" if env.ctrl.use_ctrl else "vartheta_func"}]')
+                self._test_env(ref_value, num_interactions, env, state0, manual=True, use_render=True, on_episode_end=callb)
+                storage_neural = copy.deepcopy(tmp_storage)
+                info_neural = dict(info)
+                print(f"Характеристики ПП {model_name}:", info_neural)
+                data = data.append({'Устройство': get_model_name_desc(model_name), 'σ, [%]': info_neural['overshoot'],\
+                'tпп, [с]': info_neural['settling_time'], 'tв, [с]': info_neural['rise_time'],\
+                    f"Δ, {'[м]' if env_PID.ctrl.use_ctrl else '[град]'}": info_neural['static_error'], 'Q, [-]': quality}, ignore_index=True)
+
+                storage.merge(storage_neural, model_name)
+
             if plot:
-                storage2.plot(["rew", "rew_neural"], "t", 't, [с]', 'reward, [-]')
-                storage2.plot(["vartheta_ref", "vartheta_ref_neural", "vartheta_neural", "vartheta"], "t", 't, [с]', 'ϑ, [град]')
-                if env.ctrl.use_ctrl:
-                    storage2.plot(['hzh', 'hzh_neural', 'y_neural', 'y'], "t", 't, [с]', 'h, [м]')
-                storage2.plot(['deltaz_neural', 'deltaz', 'deltaz_ref_neural'], 't', 't, [с]', 'δ_ком, [град]')
-                storage2.plot(["deltaz_real_neural", "deltaz_real"], "t", 't, [с]', 'δ, [град]')
+                def get_pid_labels(label:str) -> List[str]:
+                    if len(pid_coefs) > 1:
+                        return [f"{label}__{pid_name_index(i)}" for i in range(len(pid_coefs))]
+                    else:
+                        return [label]
+                storage.plot(["vartheta_ref", *get_pid_labels("vartheta"), *[f"vartheta__{model_name}" for model_name in model_names]], "t", 't, [с]', 'ϑ, [град]')
+                if env_PID.ctrl.use_ctrl:
+                    storage.plot(['hzh', *get_pid_labels("y"), *[f"h__{model_name}" for model_name in model_names]], "t", 't, [с]', 'h, [м]')
+                storage.plot([*get_pid_labels("U_com"), *[f"{label}__{model_name}" for model_name in model_names for label in ["U_com", "U_PID"]]], 't', 't, [с]', 'Uком, [град]')
+                storage.plot([*get_pid_labels("deltaz"), *[f"deltaz__{model_name}" for model_name in model_names]], "t", 't, [с]', 'δ, [град]')
+                storage.plot([*get_pid_labels("rew"), *[f"rew__{model_name}" for model_name in model_names]], "t", 't, [с]', 'reward, [-]')
+
             if output_dir:
-                os.makedirs(os.path.join(output_dir, self.model_name), exist_ok=True)
-                write_info(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}_info.txt"),\
-                    f"СС НС: {info_neural}\nСС ПИД: {info_pid}")
-                storage2.save(os.path.join(output_dir, self.model_name, f"data_{f'h_{ref_value}' if env.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}.xlsx"))
+                model_dir = output_dir if (collect or len(env_inits) > 1) else os.path.join(output_dir, self.model_name)
+                filepath = os.path.join(model_dir, f"data_{f'h_{ref_value}' if env_PID.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}.xlsx")
+                os.makedirs(model_dir, exist_ok=True)
+                data.set_index('Устройство', inplace=True)
+                datas.append(data)
+                data.to_excel(os.path.join(model_dir, f"data_{f'h_{ref_value}' if env_PID.ctrl.use_ctrl else f'vartheta_{ref_value*180/pi}'}_info.xlsx"),\
+                    index=True, header=True)
+                storages[filepath] = storage
+
+        for i in range(len(datas)):
+            datas[i]['σ, [%]'] = datas[i]['σ, [%]'].abs()
+        data_mean = pd.concat(datas)
+        data_mean = data_mean.groupby(data_mean.index).mean(False)
+        data_mean.to_excel(os.path.join(model_dir, f"data_{'h' if env_PID.ctrl.use_ctrl else 'vartheta'}_info_mean.xlsx"),\
+                    index=True, header=True)
+        for filepath, storage in storages.items():
+            storage.save(filepath, base="t")
+        self._init_names(model_name_backup)
 
 
     def show(self) -> None:
